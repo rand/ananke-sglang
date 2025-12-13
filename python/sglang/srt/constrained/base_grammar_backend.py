@@ -245,6 +245,21 @@ def create_grammar_backend(
             any_whitespace=not server_args.constrained_json_disable_any_whitespace,
             whitespace_pattern=server_args.constrained_json_whitespace_pattern,
         )
+    elif name == "ananke":
+        from sglang.srt.constrained.ananke.backend.backend import AnankeBackend
+
+        # Convert Set[int] to List[int] if needed
+        eos_list = list(eos_token_ids) if eos_token_ids else None
+
+        grammar_backend = AnankeBackend(
+            tokenizer=tokenizer,
+            vocab_size=vocab_size,
+            model_eos_token_ids=eos_list,
+            any_whitespace=not server_args.constrained_json_disable_any_whitespace,
+            whitespace_pattern=server_args.constrained_json_whitespace_pattern,
+            language=getattr(server_args, "ananke_language", "python"),
+            max_rollback_tokens=getattr(server_args, "ananke_max_rollback_tokens", 200),
+        )
     elif name == "none":
         return None
     else:
