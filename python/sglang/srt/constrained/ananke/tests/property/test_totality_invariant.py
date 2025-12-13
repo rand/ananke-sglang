@@ -426,7 +426,7 @@ class TestTotalityTotalization:
         result = totalize(node, expected, EMPTY_ENVIRONMENT)
 
         # Key invariant: synthesized_type is never None
-        assert result.node.synthesized_type is not None
+        assert result.ast.root.synthesized_type is not None
 
 
 class TestTotalityHolePreservation:
@@ -441,11 +441,11 @@ class TestTotalityHolePreservation:
 
         assert result is not None
         # Hole should have a mark
-        assert result.node.mark is not None
+        assert result.ast.root.mark is not None
         # Mark should be HoleMark with expected type
-        assert isinstance(result.node.mark, HoleMark)
-        assert result.node.mark.expected_type == INT
-        assert result.node.mark.hole_id == hole_id
+        assert isinstance(result.ast.root.mark, HoleMark)
+        assert result.ast.root.mark.expected_type == INT
+        assert result.ast.root.mark.hole_id == hole_id
 
 
 class TestTotalityErrorLocalization:
@@ -457,10 +457,10 @@ class TestTotalityErrorLocalization:
         result = totalize(node, STR, EMPTY_ENVIRONMENT)
 
         assert result is not None
-        if isinstance(result.node.mark, InconsistentMark):
+        if isinstance(result.ast.root.mark, InconsistentMark):
             # Should have provenance
-            assert result.node.mark.provenance is not None
-            assert isinstance(result.node.mark.provenance, Provenance)
+            assert result.ast.root.mark.provenance is not None
+            assert isinstance(result.ast.root.mark.provenance, Provenance)
 
 
 class TestTotalityNeverReturnsNone:
@@ -488,7 +488,7 @@ class TestTotalityNeverReturnsNone:
         """Totalization always returns non-None node."""
         node = create_hole_node(hole_id="test", expected_type=None, span=UNKNOWN_SPAN)
         result = totalize(node, expected, EMPTY_ENVIRONMENT)
-        assert result.node is not None
+        assert result.ast.root is not None
 
 
 if __name__ == "__main__":
