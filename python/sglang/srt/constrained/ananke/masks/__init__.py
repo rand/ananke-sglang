@@ -11,4 +11,81 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Token mask computation and fusion across constraint domains."""
+"""Token mask computation and fusion across constraint domains.
+
+This module provides:
+- TokenMaskFuser: Fuses masks from multiple domains
+- MaskCache: LRU cache for computed masks
+- IncrementalMaskComputer: Incremental mask computation
+- LazyConstraintEvaluator: Budget-limited lazy evaluation
+"""
+
+from __future__ import annotations
+
+from .fuser import (
+    TokenMaskFuser,
+    MultiDomainMaskFuser,
+    FusionStrategy,
+    FusionResult,
+    DomainMaskInfo,
+    create_fuser,
+)
+from .cache import (
+    MaskCache,
+    DomainCache,
+    MultiDomainCache,
+    CacheKey,
+    CacheEntry,
+    CacheStats,
+    create_cache,
+)
+from .incremental import (
+    IncrementalMaskComputer,
+    PositionAwareMaskComputer,
+    ChangeKind,
+    ConstraintChange,
+    ComputationResult,
+    create_incremental_computer,
+)
+from .lazy import (
+    LazyConstraintEvaluator,
+    AdaptiveLazyEvaluator,
+    LazyMask,
+    EvaluationPriority,
+    EvaluationBudget,
+    LazyEvaluationResult,
+    create_lazy_evaluator,
+)
+
+__all__ = [
+    # Fuser
+    "TokenMaskFuser",
+    "MultiDomainMaskFuser",
+    "FusionStrategy",
+    "FusionResult",
+    "DomainMaskInfo",
+    "create_fuser",
+    # Cache
+    "MaskCache",
+    "DomainCache",
+    "MultiDomainCache",
+    "CacheKey",
+    "CacheEntry",
+    "CacheStats",
+    "create_cache",
+    # Incremental
+    "IncrementalMaskComputer",
+    "PositionAwareMaskComputer",
+    "ChangeKind",
+    "ConstraintChange",
+    "ComputationResult",
+    "create_incremental_computer",
+    # Lazy
+    "LazyConstraintEvaluator",
+    "AdaptiveLazyEvaluator",
+    "LazyMask",
+    "EvaluationPriority",
+    "EvaluationBudget",
+    "LazyEvaluationResult",
+    "create_lazy_evaluator",
+]
