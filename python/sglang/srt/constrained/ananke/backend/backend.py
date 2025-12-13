@@ -50,11 +50,19 @@ try:
     from ..core.constraint import TOP, BOTTOM
     from ..core.domain import ConstraintDomain, PassthroughDomain
     from ..core.unified import UNIFIED_TOP, UnifiedConstraint
+    from ..domains.types.domain import TypeDomain
+    from ..domains.imports.domain import ImportDomain
+    from ..domains.controlflow.domain import ControlFlowDomain
+    from ..domains.semantics.domain import SemanticDomain
 except ImportError:
     from backend.grammar import AnankeGrammar
     from core.constraint import TOP, BOTTOM
     from core.domain import ConstraintDomain, PassthroughDomain
     from core.unified import UNIFIED_TOP, UnifiedConstraint
+    from domains.types.domain import TypeDomain
+    from domains.imports.domain import ImportDomain
+    from domains.controlflow.domain import ControlFlowDomain
+    from domains.semantics.domain import SemanticDomain
 
 logger = logging.getLogger(__name__)
 
@@ -150,45 +158,32 @@ class AnankeBackend(BaseGrammarBackend):
     def _create_domains(self) -> Dict[str, ConstraintDomain]:
         """Create constraint domain instances.
 
-        For Phase 1, this creates passthrough domains that impose no
-        constraints. Full domain implementations will be added in later phases.
+        Creates full domain implementations for each enabled domain:
+        - TypeDomain: Incremental bidirectional type checking (Hazel-inspired)
+        - ImportDomain: Module/package constraint tracking
+        - ControlFlowDomain: CFG-based reachability analysis
+        - SemanticDomain: SMT-based constraint checking
 
         Returns:
             Dictionary mapping domain names to domain instances
         """
         domains: Dict[str, ConstraintDomain] = {}
 
-        # Types domain - Phase 3 will implement full type checking
+        # Types domain - Incremental bidirectional type checking
         if "types" in self.enabled_domains:
-            domains["types"] = PassthroughDomain(
-                domain_name="types",
-                top_constraint=TOP,
-                bottom_constraint=BOTTOM,
-            )
+            domains["types"] = TypeDomain(language=self.language)
 
-        # Imports domain - Phase 7 will implement import resolution
+        # Imports domain - Module/package constraint tracking
         if "imports" in self.enabled_domains:
-            domains["imports"] = PassthroughDomain(
-                domain_name="imports",
-                top_constraint=TOP,
-                bottom_constraint=BOTTOM,
-            )
+            domains["imports"] = ImportDomain(language=self.language)
 
-        # Control flow domain - Phase 8 will implement CFG analysis
+        # Control flow domain - CFG-based reachability analysis
         if "controlflow" in self.enabled_domains:
-            domains["controlflow"] = PassthroughDomain(
-                domain_name="controlflow",
-                top_constraint=TOP,
-                bottom_constraint=BOTTOM,
-            )
+            domains["controlflow"] = ControlFlowDomain(language=self.language)
 
-        # Semantics domain - Phase 9 will implement SMT solving
+        # Semantics domain - SMT-based constraint checking
         if "semantics" in self.enabled_domains:
-            domains["semantics"] = PassthroughDomain(
-                domain_name="semantics",
-                top_constraint=TOP,
-                bottom_constraint=BOTTOM,
-            )
+            domains["semantics"] = SemanticDomain(language=self.language)
 
         return domains
 
