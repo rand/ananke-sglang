@@ -11,4 +11,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Language-specific import resolvers for Python, TypeScript, Rust, Zig, Go."""
+"""Language-specific import resolvers for Python, TypeScript, Rust, Zig, Go.
+
+This module provides import resolution for various languages:
+- PythonImportResolver: Python stdlib and pip packages
+- PassthroughResolver: Testing resolver that always succeeds
+- DenyListResolver: Security-focused resolver that blocks specific modules
+"""
+
+from __future__ import annotations
+
+from .base import (
+    ImportResolver,
+    ImportResolution,
+    ResolvedModule,
+    PassthroughResolver,
+    DenyListResolver,
+)
+from .python import (
+    PythonImportResolver,
+    PYTHON_STDLIB,
+    create_python_resolver,
+)
+
+__all__ = [
+    # Base types
+    "ImportResolver",
+    "ImportResolution",
+    "ResolvedModule",
+    # Utility resolvers
+    "PassthroughResolver",
+    "DenyListResolver",
+    # Python resolver
+    "PythonImportResolver",
+    "PYTHON_STDLIB",
+    "create_python_resolver",
+]

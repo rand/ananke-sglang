@@ -11,4 +11,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Import domain for module/package availability constraints."""
+"""Import domain for module/package availability constraints.
+
+This module provides:
+- ImportConstraint: Constraint tracking required/forbidden/available modules
+- ImportDomain: Domain for detecting and validating imports
+- ModuleSpec: Specification for a module (name, version, alias)
+- Import resolvers for language-specific module resolution
+"""
+
+from __future__ import annotations
+
+from .constraint import (
+    ImportConstraint,
+    ModuleSpec,
+    IMPORT_TOP,
+    IMPORT_BOTTOM,
+    import_requiring,
+    import_forbidding,
+)
+from .domain import ImportDomain, ImportDomainCheckpoint
+
+__all__ = [
+    # Constraint types
+    "ImportConstraint",
+    "ModuleSpec",
+    "IMPORT_TOP",
+    "IMPORT_BOTTOM",
+    # Factory functions
+    "import_requiring",
+    "import_forbidding",
+    # Domain
+    "ImportDomain",
+    "ImportDomainCheckpoint",
+]
