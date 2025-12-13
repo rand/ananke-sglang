@@ -11,4 +11,74 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Control flow domain for CFG-based reachability constraints."""
+"""Control flow domain for CFG-based reachability constraints.
+
+This module provides:
+- ControlFlowConstraint: Constraint on reachability and termination
+- ControlFlowDomain: Domain for CFG-based constraint tracking
+- CFGSketch: Lightweight control flow graph representation
+- Reachability analysis utilities
+"""
+
+from __future__ import annotations
+
+from .constraint import (
+    ControlFlowConstraint,
+    CodePoint,
+    ReachabilityKind,
+    TerminationRequirement,
+    ReachabilityConstraintItem,
+    CONTROLFLOW_TOP,
+    CONTROLFLOW_BOTTOM,
+    controlflow_requiring_reach,
+    controlflow_forbidding_reach,
+    controlflow_requiring_termination,
+)
+from .cfg import (
+    BasicBlock,
+    CFGEdge,
+    CFGSketch,
+    CFGBuilder,
+    EdgeKind,
+)
+from .domain import (
+    ControlFlowDomain,
+    ControlFlowDomainCheckpoint,
+)
+from .reachability import (
+    ReachabilityAnalyzer,
+    ReachabilityResult,
+    compute_dominators,
+    compute_post_dominators,
+    find_loop_bodies,
+)
+
+__all__ = [
+    # Constraint types
+    "ControlFlowConstraint",
+    "CodePoint",
+    "ReachabilityKind",
+    "TerminationRequirement",
+    "ReachabilityConstraintItem",
+    "CONTROLFLOW_TOP",
+    "CONTROLFLOW_BOTTOM",
+    # Factory functions
+    "controlflow_requiring_reach",
+    "controlflow_forbidding_reach",
+    "controlflow_requiring_termination",
+    # CFG types
+    "BasicBlock",
+    "CFGEdge",
+    "CFGSketch",
+    "CFGBuilder",
+    "EdgeKind",
+    # Domain
+    "ControlFlowDomain",
+    "ControlFlowDomainCheckpoint",
+    # Reachability analysis
+    "ReachabilityAnalyzer",
+    "ReachabilityResult",
+    "compute_dominators",
+    "compute_post_dominators",
+    "find_loop_bodies",
+]
