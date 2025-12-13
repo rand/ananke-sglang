@@ -51,6 +51,7 @@ class ASTNodeKind(Enum):
     VARIABLE = auto()
     LAMBDA = auto()
     APPLICATION = auto()
+    CALL = auto()  # Function call
     LET = auto()
     IF = auto()
     BINARY_OP = auto()
@@ -60,6 +61,7 @@ class ASTNodeKind(Enum):
     TUPLE = auto()
     ATTRIBUTE = auto()
     SUBSCRIPT = auto()
+    EXPRESSION = auto()  # Generic expression
 
     # Statements
     ASSIGNMENT = auto()
@@ -73,6 +75,7 @@ class ASTNodeKind(Enum):
     HOLE = auto()
     MODULE = auto()
     BLOCK = auto()
+    ERROR = auto()  # Error recovery node
 
 
 @dataclass

@@ -11,4 +11,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Language-specific incremental parsers using tree-sitter."""
+"""Language-specific incremental parsers.
+
+This package provides incremental parser implementations for each
+supported programming language.
+
+Currently Supported:
+    - Python (PythonIncrementalParser)
+
+Planned:
+    - TypeScript
+    - Rust
+    - Zig
+    - Go
+"""
+
+from parsing.languages.python import (
+    PythonIncrementalParser,
+    create_python_parser,
+)
+
+
+__all__ = [
+    "PythonIncrementalParser",
+    "create_python_parser",
+]
