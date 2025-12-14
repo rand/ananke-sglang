@@ -37,6 +37,11 @@ import torch
 try:
     from ...core.constraint import Satisfiability
     from ...core.domain import ConstraintDomain, GenerationContext
+    from ...core.token_classifier import (
+        TokenClassifier,
+        TokenCategory,
+        get_or_create_classifier,
+    )
     from .constraint import (
         TYPE_BOTTOM,
         TYPE_TOP,
@@ -65,6 +70,11 @@ try:
 except ImportError:
     from core.constraint import Satisfiability
     from core.domain import ConstraintDomain, GenerationContext
+    from core.token_classifier import (
+        TokenClassifier,
+        TokenCategory,
+        get_or_create_classifier,
+    )
     from domains.types.constraint import (
         TYPE_BOTTOM,
         TYPE_TOP,
@@ -113,6 +123,167 @@ class TypeDomainCheckpoint:
     current_expected: Optional[Type]
 
 
+class TypeMaskCache:
+    """Cache for precomputed type masks.
+
+    Precomputes boolean masks for primitive types at initialization.
+    This enables O(1) mask retrieval during token_mask() instead of
+    O(vocab_size) per-token classification.
+
+    Key optimization: Classify vocabulary once, create base masks for
+    INT, STR, BOOL, FLOAT, NONE, then combine/modify at runtime.
+    """
+
+    def __init__(
+        self,
+        classifier: TokenClassifier,
+        vocab_size: int,
+        device: str = "cpu",
+    ):
+        """Initialize the mask cache.
+
+        Args:
+            classifier: Pre-initialized TokenClassifier
+            vocab_size: Size of the vocabulary
+            device: PyTorch device for tensors
+        """
+        self._classifier = classifier
+        self._vocab_size = vocab_size
+        self._device = device
+
+        # Precomputed masks for primitive types
+        self._type_masks: Dict[Type, torch.Tensor] = {}
+        self._initialized = False
+
+    def initialize(self) -> None:
+        """Precompute masks for all primitive types."""
+        if self._initialized:
+            return
+
+        # Ensure classifier is initialized
+        if not self._classifier.initialized:
+            self._classifier.initialize()
+
+        # Create base masks for primitive types
+        self._type_masks[INT] = self._create_int_mask()
+        self._type_masks[FLOAT] = self._create_float_mask()
+        self._type_masks[STR] = self._create_str_mask()
+        self._type_masks[BOOL] = self._create_bool_mask()
+        self._type_masks[NONE] = self._create_none_mask()
+
+        self._initialized = True
+
+    def _create_int_mask(self) -> torch.Tensor:
+        """Create mask for int-compatible tokens.
+
+        Blocks: string literals, float literals with decimals
+        Allows: int literals, identifiers, operators, keywords, etc.
+        """
+        mask = torch.ones(self._vocab_size, dtype=torch.bool, device=self._device)
+
+        # Block string literals
+        for token_id in self._classifier.by_category(TokenCategory.STRING_LITERAL):
+            if token_id < self._vocab_size:
+                mask[token_id] = False
+
+        return mask
+
+    def _create_float_mask(self) -> torch.Tensor:
+        """Create mask for float-compatible tokens.
+
+        Blocks: string literals
+        Allows: int and float literals, identifiers, operators, etc.
+        """
+        mask = torch.ones(self._vocab_size, dtype=torch.bool, device=self._device)
+
+        # Block string literals
+        for token_id in self._classifier.by_category(TokenCategory.STRING_LITERAL):
+            if token_id < self._vocab_size:
+                mask[token_id] = False
+
+        return mask
+
+    def _create_str_mask(self) -> torch.Tensor:
+        """Create mask for str-compatible tokens.
+
+        Blocks: bare numeric literals (without conversion)
+        Allows: string literals, identifiers, operators, etc.
+        """
+        mask = torch.ones(self._vocab_size, dtype=torch.bool, device=self._device)
+
+        # Block int and float literals (need explicit str() call)
+        for token_id in self._classifier.by_category(TokenCategory.INT_LITERAL):
+            if token_id < self._vocab_size:
+                mask[token_id] = False
+
+        for token_id in self._classifier.by_category(TokenCategory.FLOAT_LITERAL):
+            if token_id < self._vocab_size:
+                mask[token_id] = False
+
+        return mask
+
+    def _create_bool_mask(self) -> torch.Tensor:
+        """Create mask for bool-compatible tokens.
+
+        Blocks: string literals, float literals
+        Allows: True, False, identifiers, comparison operators, etc.
+        """
+        mask = torch.ones(self._vocab_size, dtype=torch.bool, device=self._device)
+
+        # Block string literals
+        for token_id in self._classifier.by_category(TokenCategory.STRING_LITERAL):
+            if token_id < self._vocab_size:
+                mask[token_id] = False
+
+        # Block float literals
+        for token_id in self._classifier.by_category(TokenCategory.FLOAT_LITERAL):
+            if token_id < self._vocab_size:
+                mask[token_id] = False
+
+        return mask
+
+    def _create_none_mask(self) -> torch.Tensor:
+        """Create mask for None-compatible tokens.
+
+        Conservative: allows most things since None context is usually
+        checking for None explicitly.
+        """
+        return torch.ones(self._vocab_size, dtype=torch.bool, device=self._device)
+
+    def get_mask(self, expected: Type) -> Optional[torch.Tensor]:
+        """Get precomputed mask for a type.
+
+        Args:
+            expected: The expected type
+
+        Returns:
+            Precomputed mask or None if not cached
+        """
+        if not self._initialized:
+            self.initialize()
+
+        return self._type_masks.get(expected)
+
+    def has_mask(self, expected: Type) -> bool:
+        """Check if a type has a precomputed mask.
+
+        Args:
+            expected: The expected type
+
+        Returns:
+            True if mask is precomputed
+        """
+        if not self._initialized:
+            self.initialize()
+
+        return expected in self._type_masks
+
+    @property
+    def classifier(self) -> TokenClassifier:
+        """Get the underlying classifier."""
+        return self._classifier
+
+
 class TypeDomain(ConstraintDomain[TypeConstraint]):
     """Type domain implementing incremental bidirectional type checking.
 
@@ -135,17 +306,48 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
         self,
         environment: Optional[TypeEnvironment] = None,
         expected_type: Optional[Type] = None,
+        language: str = "python",
+        tokenizer: Optional[Any] = None,
     ):
         """Initialize the type domain.
 
         Args:
             environment: Initial type environment (defaults to empty)
             expected_type: Initial expected type (defaults to Any)
+            language: Programming language for classification
+            tokenizer: Optional tokenizer for precomputed masks
         """
         self._environment = environment if environment is not None else EMPTY_ENVIRONMENT
         self._expected_type = expected_type if expected_type is not None else ANY
         self._substitution = EMPTY_SUBSTITUTION
         self._state_counter = 0
+        self._language = language
+
+        # Lazy-initialized classifier and mask cache
+        self._tokenizer = tokenizer
+        self._classifier: Optional[TokenClassifier] = None
+        self._mask_cache: Optional[TypeMaskCache] = None
+
+    def _ensure_classifier_initialized(self, context: GenerationContext) -> None:
+        """Ensure classifier and mask cache are initialized.
+
+        Args:
+            context: Generation context with tokenizer and vocab_size
+        """
+        tokenizer = context.tokenizer or self._tokenizer
+        if tokenizer is None:
+            return
+
+        if self._classifier is None:
+            self._classifier = get_or_create_classifier(tokenizer, self._language)
+
+        if self._mask_cache is None and self._classifier is not None:
+            self._mask_cache = TypeMaskCache(
+                self._classifier,
+                vocab_size=context.vocab_size,
+                device=context.device,
+            )
+            self._mask_cache.initialize()
 
     @property
     def name(self) -> str:
@@ -182,12 +384,12 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
         Returns a boolean tensor indicating which tokens could produce
         values compatible with the expected type.
 
-        The implementation uses a hybrid approach:
-        1. Structural tokens (brackets, operators, keywords) - always allowed
-        2. Literals - checked against expected type
-        3. Identifiers - checked against type environment
+        The implementation uses precomputed masks for O(1) performance:
+        1. Primitive types (int, str, bool, float, None) use precomputed masks
+        2. Compound types fall back to incremental computation
+        3. Identifiers are filtered against type environment
 
-        Performance is maintained via budget-limited checking and caching.
+        Performance target: <100μs for primitive types.
 
         Args:
             constraint: The current type constraint
@@ -207,12 +409,68 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
         if expected is None or isinstance(expected, AnyType):
             return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
 
-        # Initialize mask - all tokens allowed by default for safety
+        # Ensure classifier and mask cache are initialized
+        self._ensure_classifier_initialized(context)
+
+        # Try precomputed mask first (O(1) for primitive types)
+        if self._mask_cache is not None and self._mask_cache.has_mask(expected):
+            mask = self._mask_cache.get_mask(expected)
+            if mask is not None:
+                # Clone to avoid modifying cached mask
+                mask = mask.clone()
+                # Apply identifier blocking based on type environment
+                mask = self._apply_identifier_blocking(mask, expected, context)
+                return mask
+
+        # Fall back to incremental computation for compound types
         mask = torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
 
-        # If we have a tokenizer, we can do more refined filtering
+        # If we have a tokenizer, compute type-aware mask
         if context.tokenizer is not None:
             mask = self._compute_type_aware_mask(expected, context)
+
+        return mask
+
+    def _apply_identifier_blocking(
+        self,
+        mask: torch.Tensor,
+        expected: Type,
+        context: GenerationContext,
+    ) -> torch.Tensor:
+        """Apply identifier blocking based on type environment.
+
+        Blocks identifiers that have incompatible types according to
+        the current type environment.
+
+        Args:
+            mask: The current mask (will be modified in place)
+            expected: The expected type
+            context: Generation context
+
+        Returns:
+            Modified mask
+        """
+        if self._classifier is None:
+            return mask
+
+        # Get all identifier tokens
+        identifier_tokens = self._classifier.by_category(TokenCategory.IDENTIFIER)
+
+        # Check each identifier against the type environment
+        for token_id in identifier_tokens:
+            if token_id >= context.vocab_size:
+                continue
+
+            # Get the identifier text
+            tc = self._classifier.get_classification(token_id)
+            var_name = tc.text.strip()
+
+            # Look up type in environment
+            var_type = self._environment.lookup(var_name)
+            if var_type is not None:
+                # Check compatibility with expected type
+                if not self._types_compatible(var_type, expected):
+                    mask[token_id] = False
 
         return mask
 

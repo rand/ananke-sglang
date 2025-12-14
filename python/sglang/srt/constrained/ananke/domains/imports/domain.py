@@ -25,6 +25,7 @@ the constraint accordingly.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Any, Dict, List, Optional, Set
 
 import torch
@@ -32,6 +33,12 @@ import torch
 try:
     from ...core.constraint import Satisfiability
     from ...core.domain import ConstraintDomain, GenerationContext
+    from ...core.token_classifier import (
+        TokenClassifier,
+        TokenCategory,
+        get_or_create_classifier,
+        PYTHON_IMPORT_KEYWORDS,
+    )
     from .constraint import (
         IMPORT_TOP,
         IMPORT_BOTTOM,
@@ -41,12 +48,36 @@ try:
 except ImportError:
     from core.constraint import Satisfiability
     from core.domain import ConstraintDomain, GenerationContext
+    from core.token_classifier import (
+        TokenClassifier,
+        TokenCategory,
+        get_or_create_classifier,
+        PYTHON_IMPORT_KEYWORDS,
+    )
     from domains.imports.constraint import (
         IMPORT_TOP,
         IMPORT_BOTTOM,
         ImportConstraint,
         ModuleSpec,
     )
+
+
+class ImportContext(Enum):
+    """Current position within an import statement.
+
+    Tracks the state machine for import detection:
+    - NONE: Not in an import statement
+    - IMPORT_KEYWORD: Just saw 'import' keyword
+    - FROM_KEYWORD: Just saw 'from' keyword
+    - MODULE_NAME: In module name position (after import/from)
+    - IMPORT_AFTER_FROM: After 'from X import' keyword
+    """
+
+    NONE = auto()
+    IMPORT_KEYWORD = auto()
+    FROM_KEYWORD = auto()
+    MODULE_NAME = auto()
+    IMPORT_AFTER_FROM = auto()
 
 
 @dataclass
@@ -57,11 +88,15 @@ class ImportDomainCheckpoint:
         imported_modules: Set of imported module names
         import_buffer: Current import statement being built
         state_counter: State counter value
+        import_context: Current import context state
+        partial_module: Partial module name being typed
     """
 
     imported_modules: Set[str]
     import_buffer: str
     state_counter: int
+    import_context: ImportContext = ImportContext.NONE
+    partial_module: str = ""
 
 
 class ImportDomain(ConstraintDomain[ImportConstraint]):
@@ -79,16 +114,41 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
         >>> # As code is generated, constraint updates with available imports
     """
 
-    def __init__(self, language: str = "python"):
+    def __init__(self, language: str = "python", tokenizer: Optional[Any] = None):
         """Initialize the import domain.
 
         Args:
             language: Programming language (affects import detection)
+            tokenizer: Optional tokenizer for precise masking
         """
         self._language = language
         self._imported_modules: Set[str] = set()
         self._import_buffer: str = ""
         self._state_counter = 0
+
+        # Import context state machine
+        self._import_context = ImportContext.NONE
+        self._partial_module = ""
+
+        # Lazy-initialized classifier
+        self._tokenizer = tokenizer
+        self._classifier: Optional[TokenClassifier] = None
+
+        # Precomputed token sets for common modules (populated on init)
+        self._module_name_tokens: Dict[str, Set[int]] = {}
+
+    def _ensure_classifier_initialized(self, context: GenerationContext) -> None:
+        """Ensure classifier is initialized.
+
+        Args:
+            context: Generation context with tokenizer
+        """
+        tokenizer = context.tokenizer or self._tokenizer
+        if tokenizer is None:
+            return
+
+        if self._classifier is None:
+            self._classifier = get_or_create_classifier(tokenizer, self._language)
 
     @property
     def name(self) -> str:
@@ -122,11 +182,15 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
     ) -> torch.Tensor:
         """Compute a token mask based on import constraints.
 
-        If a module is forbidden, tokens that would complete an import
-        of that module may be blocked.
+        If a module is forbidden and we're in an import context,
+        tokens that would complete an import of that module are blocked.
 
-        Current implementation returns all True (conservative).
-        Full implementation would analyze partial import statements.
+        The mask is only restrictive when:
+        1. We're in an import statement (after 'import' or 'from')
+        2. The constraint has forbidden modules
+        3. The partial module name could match a forbidden module
+
+        Performance target: <50μs typical, <200μs worst case.
 
         Args:
             constraint: Current import constraint
@@ -141,9 +205,175 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
         if constraint.is_bottom():
             return torch.zeros(context.vocab_size, dtype=torch.bool, device=context.device)
 
-        # Conservative: allow all tokens
-        # Full implementation would block tokens that would import forbidden modules
-        return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+        # If no forbidden modules, allow all
+        if not constraint.forbidden:
+            return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+
+        # If not in import context, allow all
+        if self._import_context == ImportContext.NONE:
+            return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+
+        # Ensure classifier is initialized
+        self._ensure_classifier_initialized(context)
+
+        # Create base mask (all True)
+        mask = torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+
+        # Only apply blocking if we're in module name position
+        if self._import_context in (ImportContext.IMPORT_KEYWORD, ImportContext.FROM_KEYWORD, ImportContext.MODULE_NAME):
+            mask = self._apply_forbidden_module_blocking(mask, constraint, context)
+
+        return mask
+
+    def _apply_forbidden_module_blocking(
+        self,
+        mask: torch.Tensor,
+        constraint: ImportConstraint,
+        context: GenerationContext,
+    ) -> torch.Tensor:
+        """Block tokens that would complete a forbidden import.
+
+        Args:
+            mask: Current mask to modify
+            constraint: Constraint with forbidden modules
+            context: Generation context
+
+        Returns:
+            Modified mask
+        """
+        if self._classifier is None:
+            return mask
+
+        # For each forbidden module, check if partial matches
+        for forbidden in constraint.forbidden:
+            # Check if current partial could lead to this forbidden module
+            if self._could_match_forbidden(forbidden):
+                # Block tokens that would continue toward this module
+                self._block_module_completion_tokens(mask, forbidden, context)
+
+        return mask
+
+    def _could_match_forbidden(self, forbidden: str) -> bool:
+        """Check if current partial module name could match forbidden module.
+
+        Args:
+            forbidden: Forbidden module name (e.g., "subprocess")
+
+        Returns:
+            True if partial could lead to forbidden
+        """
+        if not self._partial_module:
+            # Empty partial - any forbidden module could match
+            return True
+
+        # Check if forbidden module starts with partial
+        return forbidden.startswith(self._partial_module)
+
+    def _block_module_completion_tokens(
+        self,
+        mask: torch.Tensor,
+        forbidden: str,
+        context: GenerationContext,
+    ) -> None:
+        """Block tokens that would complete import of forbidden module.
+
+        Args:
+            mask: Mask to modify (in place)
+            forbidden: Forbidden module name
+            context: Generation context
+        """
+        if self._classifier is None:
+            return
+
+        # Calculate what continuation would complete the forbidden import
+        if self._partial_module:
+            # Need to complete from partial to forbidden
+            if forbidden.startswith(self._partial_module):
+                continuation = forbidden[len(self._partial_module):]
+            else:
+                return  # Partial doesn't match, nothing to block
+        else:
+            # Need full module name
+            continuation = forbidden
+
+        # Block tokens that are the forbidden module name or start it
+        # Check all identifier tokens
+        for token_id in self._classifier.by_category(TokenCategory.IDENTIFIER):
+            if token_id >= context.vocab_size:
+                continue
+
+            tc = self._classifier.get_classification(token_id)
+            token_text = tc.text.strip()
+
+            # Block if token would complete or continue toward forbidden
+            if continuation.startswith(token_text) or token_text.startswith(continuation):
+                # This token would help complete the forbidden import
+                mask[token_id] = False
+
+            # Also block exact match
+            if token_text == forbidden or token_text == continuation:
+                mask[token_id] = False
+
+    def _update_import_context(self, token_text: str) -> None:
+        """Update the import context state machine.
+
+        Args:
+            token_text: The token just observed
+        """
+        stripped = token_text.strip()
+
+        if self._import_context == ImportContext.NONE:
+            if stripped == "import":
+                self._import_context = ImportContext.IMPORT_KEYWORD
+                self._partial_module = ""
+            elif stripped == "from":
+                self._import_context = ImportContext.FROM_KEYWORD
+                self._partial_module = ""
+
+        elif self._import_context == ImportContext.IMPORT_KEYWORD:
+            if stripped and stripped.isidentifier():
+                # This is a module name
+                self._partial_module += stripped
+                self._import_context = ImportContext.MODULE_NAME
+            elif stripped == ".":
+                # Dot in module path
+                self._partial_module += "."
+            elif stripped in ("\n", ";", ","):
+                # End of import or next module
+                self._import_context = ImportContext.NONE
+                self._partial_module = ""
+
+        elif self._import_context == ImportContext.FROM_KEYWORD:
+            if stripped and (stripped.isidentifier() or stripped.startswith(".")):
+                # Module name after 'from'
+                self._partial_module += stripped
+                self._import_context = ImportContext.MODULE_NAME
+            elif stripped == "import":
+                # 'from X import' - now in import names
+                self._import_context = ImportContext.IMPORT_AFTER_FROM
+            elif stripped in ("\n", ";"):
+                self._import_context = ImportContext.NONE
+                self._partial_module = ""
+
+        elif self._import_context == ImportContext.MODULE_NAME:
+            if stripped == ".":
+                # Continuing module path
+                self._partial_module += "."
+            elif stripped and stripped.isidentifier():
+                # More of the module name
+                self._partial_module += stripped
+            elif stripped == "import":
+                # 'from X import' transition
+                self._import_context = ImportContext.IMPORT_AFTER_FROM
+            elif stripped in ("\n", ";", ",", "as"):
+                # End of this import
+                self._import_context = ImportContext.NONE
+                self._partial_module = ""
+
+        elif self._import_context == ImportContext.IMPORT_AFTER_FROM:
+            if stripped in ("\n", ";"):
+                self._import_context = ImportContext.NONE
+                self._partial_module = ""
 
     def observe_token(
         self,
@@ -154,7 +384,8 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
         """Update the import constraint after observing a token.
 
         Detects import statements and updates the constraint with
-        newly imported modules.
+        newly imported modules. Also updates the import context
+        state machine for precise masking.
 
         Args:
             constraint: Current import constraint
@@ -176,6 +407,9 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
                 token_text = context.tokenizer.decode([token_id])
             except Exception:
                 pass
+
+        # Update import context state machine
+        self._update_import_context(token_text)
 
         # Try to detect imports
         updated_constraint = self._detect_imports(constraint, token_text, context)
@@ -328,6 +562,8 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
             imported_modules=self._imported_modules.copy(),
             import_buffer=self._import_buffer,
             state_counter=self._state_counter,
+            import_context=self._import_context,
+            partial_module=self._partial_module,
         )
 
     def restore(self, checkpoint: Any) -> None:
@@ -343,6 +579,8 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
         self._imported_modules = checkpoint.imported_modules.copy()
         self._import_buffer = checkpoint.import_buffer
         self._state_counter = checkpoint.state_counter
+        self._import_context = checkpoint.import_context
+        self._partial_module = checkpoint.partial_module
 
     def satisfiability(self, constraint: ImportConstraint) -> Satisfiability:
         """Check satisfiability of an import constraint.

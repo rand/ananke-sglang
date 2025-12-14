@@ -35,6 +35,12 @@ from .constraint import (
 from .domain import (
     SemanticDomain,
     SemanticDomainCheckpoint,
+    VariableBounds,
+    ExpressionState,
+    ExpressionContext,
+    ContextConfidence,
+    BoundsConfidence,
+    BlockingLevel,
 )
 from .smt import (
     SMTSolver,
@@ -72,6 +78,12 @@ __all__ = [
     # Domain
     "SemanticDomain",
     "SemanticDomainCheckpoint",
+    "VariableBounds",
+    "ExpressionState",
+    "ExpressionContext",
+    "ContextConfidence",
+    "BoundsConfidence",
+    "BlockingLevel",
     # SMT solver
     "SMTSolver",
     "SimpleSMTSolver",

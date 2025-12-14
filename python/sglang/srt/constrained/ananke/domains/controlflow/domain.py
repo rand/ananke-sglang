@@ -25,13 +25,19 @@ and validates against control flow constraints.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, FrozenSet, List, Optional, Set
 
 import torch
 
 try:
     from ...core.constraint import Satisfiability
     from ...core.domain import ConstraintDomain, GenerationContext
+    from ...core.token_classifier import (
+        TokenClassifier,
+        TokenCategory,
+        get_or_create_classifier,
+        PYTHON_CONTROL_KEYWORDS,
+    )
     from .constraint import (
         CONTROLFLOW_TOP,
         CONTROLFLOW_BOTTOM,
@@ -44,6 +50,12 @@ try:
 except ImportError:
     from core.constraint import Satisfiability
     from core.domain import ConstraintDomain, GenerationContext
+    from core.token_classifier import (
+        TokenClassifier,
+        TokenCategory,
+        get_or_create_classifier,
+        PYTHON_CONTROL_KEYWORDS,
+    )
     from domains.controlflow.constraint import (
         CONTROLFLOW_TOP,
         CONTROLFLOW_BOTTOM,
@@ -90,11 +102,12 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
         >>> # As code is generated, constraint is validated against CFG
     """
 
-    def __init__(self, language: str = "python"):
+    def __init__(self, language: str = "python", tokenizer: Optional[Any] = None):
         """Initialize the control flow domain.
 
         Args:
             language: Programming language (affects construct detection)
+            tokenizer: Optional tokenizer for precise masking
         """
         self._language = language
         self._cfg = CFGSketch()
@@ -102,6 +115,32 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
         self._block_counter = 0
         self._control_stack: List[Dict[str, Any]] = []
         self._token_buffer = ""
+
+        # Lazy-initialized classifier
+        self._tokenizer = tokenizer
+        self._classifier: Optional[TokenClassifier] = None
+
+        # Precomputed keyword token sets (populated on initialization)
+        self._return_tokens: FrozenSet[int] = frozenset()
+        self._break_tokens: FrozenSet[int] = frozenset()
+        self._continue_tokens: FrozenSet[int] = frozenset()
+
+    def _ensure_classifier_initialized(self, context: GenerationContext) -> None:
+        """Ensure classifier is initialized and keyword sets are precomputed.
+
+        Args:
+            context: Generation context with tokenizer
+        """
+        tokenizer = context.tokenizer or self._tokenizer
+        if tokenizer is None:
+            return
+
+        if self._classifier is None:
+            self._classifier = get_or_create_classifier(tokenizer, self._language)
+            # Precompute keyword token sets
+            self._return_tokens = self._classifier.by_keyword("return")
+            self._break_tokens = self._classifier.by_keyword("break")
+            self._continue_tokens = self._classifier.by_keyword("continue")
 
     @property
     def name(self) -> str:
@@ -135,10 +174,12 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
     ) -> torch.Tensor:
         """Compute a token mask based on control flow constraints.
 
-        Current implementation is conservative (allows all tokens).
-        A full implementation would:
-        - Block tokens that would make must-reach points unreachable
-        - Block tokens that would create paths to must-not-reach points
+        Implements context-aware keyword blocking:
+        1. Blocks break/continue outside of loops
+        2. Blocks return if must_not_reach includes function exit
+        3. Uses precomputed keyword token sets for O(1) lookups
+
+        Performance target: <20μs typical, <100μs worst case.
 
         Args:
             constraint: Current control flow constraint
@@ -153,9 +194,88 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
         if constraint.is_bottom():
             return torch.zeros(context.vocab_size, dtype=torch.bool, device=context.device)
 
-        # Conservative: allow all tokens
-        # Full implementation would analyze control flow implications
-        return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+        # Ensure classifier is initialized
+        self._ensure_classifier_initialized(context)
+
+        # Create base mask (all True)
+        mask = torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+
+        # Apply context-aware blocking
+        mask = self._apply_context_blocking(mask, constraint, context)
+
+        return mask
+
+    def _apply_context_blocking(
+        self,
+        mask: torch.Tensor,
+        constraint: ControlFlowConstraint,
+        context: GenerationContext,
+    ) -> torch.Tensor:
+        """Apply context-aware keyword blocking.
+
+        Args:
+            mask: Current mask to modify
+            constraint: Control flow constraint
+            context: Generation context
+
+        Returns:
+            Modified mask
+        """
+        # Block break/continue if not in loop context
+        if not self._in_loop_context():
+            for token_id in self._break_tokens:
+                if token_id < context.vocab_size:
+                    mask[token_id] = False
+            for token_id in self._continue_tokens:
+                if token_id < context.vocab_size:
+                    mask[token_id] = False
+
+        # Block return if must_not_reach includes function exits
+        if self._return_forbidden(constraint):
+            for token_id in self._return_tokens:
+                if token_id < context.vocab_size:
+                    mask[token_id] = False
+
+        return mask
+
+    def _in_loop_context(self) -> bool:
+        """Check if currently inside a loop.
+
+        Returns:
+            True if in loop context
+        """
+        for ctx in self._control_stack:
+            if ctx.get("type") == "loop":
+                return True
+        return False
+
+    def _in_function_context(self) -> bool:
+        """Check if currently inside a function.
+
+        Returns:
+            True if in function context
+        """
+        for ctx in self._control_stack:
+            if ctx.get("type") == "function":
+                return True
+        return False
+
+    def _return_forbidden(self, constraint: ControlFlowConstraint) -> bool:
+        """Check if return is forbidden by the constraint.
+
+        Args:
+            constraint: The control flow constraint
+
+        Returns:
+            True if return would violate the constraint
+        """
+        # Check if any must_not_reach point is a return/exit
+        for point in constraint.must_not_reach:
+            label = point.label.lower()
+            if "return" in label or "exit" in label or "function_exit" in label:
+                return True
+
+        return False
 
     def observe_token(
         self,

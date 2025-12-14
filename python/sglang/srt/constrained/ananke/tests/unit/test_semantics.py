@@ -39,6 +39,12 @@ try:
         semantic_postcondition,
         SemanticDomain,
         SemanticDomainCheckpoint,
+        VariableBounds,
+        ExpressionState,
+        ExpressionContext,
+        ContextConfidence,
+        BoundsConfidence,
+        BlockingLevel,
         SMTSolver,
         SimpleSMTSolver,
         IncrementalSMTSolver,
@@ -69,6 +75,12 @@ except ImportError:
         semantic_postcondition,
         SemanticDomain,
         SemanticDomainCheckpoint,
+        VariableBounds,
+        ExpressionState,
+        ExpressionContext,
+        ContextConfidence,
+        BoundsConfidence,
+        BlockingLevel,
         SMTSolver,
         SimpleSMTSolver,
         IncrementalSMTSolver,
@@ -759,3 +771,363 @@ class TestSemanticDomainIntegration:
         # Restore to cp1
         python_domain.restore(cp1)
         assert python_domain.formula_count == 1
+
+
+# =============================================================================
+# Context-Aware Bounds Checking Tests
+# =============================================================================
+
+
+class TestExpressionContext:
+    """Tests for ExpressionContext enum."""
+
+    def test_context_values(self) -> None:
+        """Test all context values exist."""
+        assert ExpressionContext.NONE is not None
+        assert ExpressionContext.SIMPLE_ASSIGNMENT_RHS is not None
+        assert ExpressionContext.COMPOUND_EXPR is not None
+        assert ExpressionContext.FUNCTION_CALL is not None
+        assert ExpressionContext.SUBSCRIPT is not None
+        assert ExpressionContext.CONDITIONAL is not None
+        assert ExpressionContext.LIST_LITERAL is not None
+        assert ExpressionContext.DICT_LITERAL is not None
+        assert ExpressionContext.ATTRIBUTE_ACCESS is not None
+
+
+class TestContextConfidence:
+    """Tests for ContextConfidence enum."""
+
+    def test_confidence_ordering(self) -> None:
+        """Test confidence level ordering."""
+        # HIGH should be most confident (lowest value)
+        assert ContextConfidence.HIGH.value < ContextConfidence.MEDIUM.value
+        assert ContextConfidence.MEDIUM.value < ContextConfidence.LOW.value
+        assert ContextConfidence.LOW.value < ContextConfidence.NONE.value
+
+
+class TestBoundsConfidence:
+    """Tests for BoundsConfidence enum."""
+
+    def test_bounds_confidence_values(self) -> None:
+        """Test bounds confidence values."""
+        assert BoundsConfidence.HIGH is not None
+        assert BoundsConfidence.MEDIUM is not None
+        assert BoundsConfidence.LOW is not None
+        assert BoundsConfidence.UNKNOWN is not None
+
+
+class TestBlockingLevel:
+    """Tests for BlockingLevel enum."""
+
+    def test_blocking_level_values(self) -> None:
+        """Test blocking level values."""
+        assert BlockingLevel.AGGRESSIVE is not None
+        assert BlockingLevel.CONSERVATIVE is not None
+        assert BlockingLevel.PERMISSIVE is not None
+
+
+class TestExpressionState:
+    """Tests for ExpressionState dataclass."""
+
+    def test_default_state(self) -> None:
+        """Test default ExpressionState values."""
+        state = ExpressionState()
+        assert state.context == ExpressionContext.NONE
+        assert state.context_confidence == ContextConfidence.NONE
+        assert state.target_variable is None
+        assert state.paren_depth == 0
+        assert state.bracket_depth == 0
+        assert state.brace_depth == 0
+        assert state.tokens_since_assignment == 0
+
+    def test_is_direct_literal_position(self) -> None:
+        """Test is_direct_literal_position method."""
+        # Direct assignment position
+        state = ExpressionState(
+            context=ExpressionContext.SIMPLE_ASSIGNMENT_RHS,
+            context_confidence=ContextConfidence.HIGH,
+            tokens_since_assignment=1,
+        )
+        assert state.is_direct_literal_position()
+
+        # Too many tokens since assignment
+        state.tokens_since_assignment = 5
+        assert not state.is_direct_literal_position()
+
+        # Inside parentheses
+        state.tokens_since_assignment = 1
+        state.paren_depth = 1
+        assert not state.is_direct_literal_position()
+
+        # Wrong context
+        state.paren_depth = 0
+        state.context = ExpressionContext.COMPOUND_EXPR
+        assert not state.is_direct_literal_position()
+
+    def test_copy(self) -> None:
+        """Test ExpressionState copy method."""
+        original = ExpressionState(
+            context=ExpressionContext.FUNCTION_CALL,
+            context_confidence=ContextConfidence.NONE,
+            target_variable="x",
+            paren_depth=2,
+            tokens_since_assignment=5,
+        )
+        copy = original.copy()
+
+        assert copy.context == original.context
+        assert copy.context_confidence == original.context_confidence
+        assert copy.target_variable == original.target_variable
+        assert copy.paren_depth == original.paren_depth
+        assert copy.tokens_since_assignment == original.tokens_since_assignment
+
+        # Ensure it's a new object
+        copy.paren_depth = 0
+        assert original.paren_depth == 2
+
+
+class TestVariableBoundsConfidence:
+    """Tests for VariableBounds confidence features."""
+
+    def test_effective_confidence_no_uncertainty(self) -> None:
+        """Test effective_confidence without SMT uncertainty."""
+        bounds = VariableBounds(
+            lower=0,
+            upper=100,
+            confidence=BoundsConfidence.HIGH,
+            smt_uncertain=False,
+        )
+        assert bounds.effective_confidence() == BoundsConfidence.HIGH
+
+    def test_effective_confidence_with_uncertainty(self) -> None:
+        """Test effective_confidence with SMT uncertainty."""
+        # HIGH -> MEDIUM when uncertain
+        bounds = VariableBounds(
+            lower=0,
+            confidence=BoundsConfidence.HIGH,
+            smt_uncertain=True,
+        )
+        assert bounds.effective_confidence() == BoundsConfidence.MEDIUM
+
+        # MEDIUM -> LOW when uncertain
+        bounds.confidence = BoundsConfidence.MEDIUM
+        assert bounds.effective_confidence() == BoundsConfidence.LOW
+
+        # LOW -> UNKNOWN when uncertain
+        bounds.confidence = BoundsConfidence.LOW
+        assert bounds.effective_confidence() == BoundsConfidence.UNKNOWN
+
+    def test_is_clearly_violated(self) -> None:
+        """Test is_clearly_violated for CONSERVATIVE mode."""
+        # Positive lower bound, negative value
+        bounds = VariableBounds(lower=5, upper=100)
+        assert bounds.is_clearly_violated(-1)
+        assert not bounds.is_clearly_violated(50)
+
+        # Value far out of range
+        bounds = VariableBounds(lower=10, upper=20)
+        assert bounds.is_clearly_violated(-5)  # < lower - |lower|
+        assert bounds.is_clearly_violated(50)  # > upper + |upper|
+        assert not bounds.is_clearly_violated(5)  # Close but not clearly wrong
+
+
+class TestBlockingLevelComputation:
+    """Tests for _compute_blocking_level decision matrix."""
+
+    def test_high_high_aggressive(self, python_domain: SemanticDomain) -> None:
+        """Test HIGH context + HIGH bounds = AGGRESSIVE."""
+        level = python_domain._compute_blocking_level(
+            ContextConfidence.HIGH,
+            BoundsConfidence.HIGH,
+        )
+        assert level == BlockingLevel.AGGRESSIVE
+
+    def test_high_medium_conservative(self, python_domain: SemanticDomain) -> None:
+        """Test HIGH context + MEDIUM bounds = CONSERVATIVE."""
+        level = python_domain._compute_blocking_level(
+            ContextConfidence.HIGH,
+            BoundsConfidence.MEDIUM,
+        )
+        assert level == BlockingLevel.CONSERVATIVE
+
+    def test_medium_high_conservative(self, python_domain: SemanticDomain) -> None:
+        """Test MEDIUM context + HIGH bounds = CONSERVATIVE."""
+        level = python_domain._compute_blocking_level(
+            ContextConfidence.MEDIUM,
+            BoundsConfidence.HIGH,
+        )
+        assert level == BlockingLevel.CONSERVATIVE
+
+    def test_medium_medium_conservative(self, python_domain: SemanticDomain) -> None:
+        """Test MEDIUM context + MEDIUM bounds = CONSERVATIVE."""
+        level = python_domain._compute_blocking_level(
+            ContextConfidence.MEDIUM,
+            BoundsConfidence.MEDIUM,
+        )
+        assert level == BlockingLevel.CONSERVATIVE
+
+    def test_low_anything_permissive(self, python_domain: SemanticDomain) -> None:
+        """Test LOW context = PERMISSIVE (soundness)."""
+        for bounds_conf in BoundsConfidence:
+            level = python_domain._compute_blocking_level(
+                ContextConfidence.LOW,
+                bounds_conf,
+            )
+            assert level == BlockingLevel.PERMISSIVE
+
+    def test_none_context_permissive(self, python_domain: SemanticDomain) -> None:
+        """Test NONE context = PERMISSIVE (soundness)."""
+        for bounds_conf in BoundsConfidence:
+            level = python_domain._compute_blocking_level(
+                ContextConfidence.NONE,
+                bounds_conf,
+            )
+            assert level == BlockingLevel.PERMISSIVE
+
+    def test_low_bounds_permissive(self, python_domain: SemanticDomain) -> None:
+        """Test LOW bounds = PERMISSIVE (soundness)."""
+        for context_conf in [ContextConfidence.HIGH, ContextConfidence.MEDIUM]:
+            level = python_domain._compute_blocking_level(
+                context_conf,
+                BoundsConfidence.LOW,
+            )
+            assert level == BlockingLevel.PERMISSIVE
+
+    def test_unknown_bounds_permissive(self, python_domain: SemanticDomain) -> None:
+        """Test UNKNOWN bounds = PERMISSIVE (soundness)."""
+        for context_conf in [ContextConfidence.HIGH, ContextConfidence.MEDIUM]:
+            level = python_domain._compute_blocking_level(
+                context_conf,
+                BoundsConfidence.UNKNOWN,
+            )
+            assert level == BlockingLevel.PERMISSIVE
+
+
+class TestExpressionStateTransitions:
+    """Tests for expression state machine transitions."""
+
+    def test_assignment_operator_transition(
+        self, python_domain: SemanticDomain
+    ) -> None:
+        """Test transition on seeing = operator."""
+        # Set up buffer with variable name
+        python_domain._token_buffer = "x"
+        python_domain._update_expression_state("=")
+
+        state = python_domain._expression_state
+        assert state.context == ExpressionContext.SIMPLE_ASSIGNMENT_RHS
+        assert state.context_confidence == ContextConfidence.HIGH
+        assert state.target_variable == "x"
+
+    def test_function_call_transition(self, python_domain: SemanticDomain) -> None:
+        """Test transition to FUNCTION_CALL on func(."""
+        # Start in assignment context
+        python_domain._token_buffer = "x"
+        python_domain._update_expression_state("=")
+        python_domain._token_buffer += " ="
+
+        # Simulate "func("
+        python_domain._token_buffer += " func"
+        python_domain._update_expression_state("(")
+
+        state = python_domain._expression_state
+        assert state.context == ExpressionContext.FUNCTION_CALL
+        assert state.context_confidence == ContextConfidence.NONE
+
+    def test_list_literal_transition(self, python_domain: SemanticDomain) -> None:
+        """Test transition to LIST_LITERAL on [."""
+        # Start in assignment context
+        python_domain._token_buffer = "x"
+        python_domain._update_expression_state("=")
+        python_domain._token_buffer += " ="
+
+        # Simulate "["
+        python_domain._update_expression_state("[")
+
+        state = python_domain._expression_state
+        assert state.context == ExpressionContext.LIST_LITERAL
+        assert state.context_confidence == ContextConfidence.MEDIUM
+
+    def test_statement_terminator_reset(self, python_domain: SemanticDomain) -> None:
+        """Test state reset on statement terminator."""
+        # Set up assignment context
+        python_domain._token_buffer = "x"
+        python_domain._update_expression_state("=")
+        python_domain._token_buffer += " = 5"
+
+        # Terminate statement
+        python_domain._update_expression_state("\n")
+
+        state = python_domain._expression_state
+        assert state.context == ExpressionContext.NONE
+        assert state.context_confidence == ContextConfidence.NONE
+        assert state.target_variable is None
+
+    def test_operator_downgrades_confidence(
+        self, python_domain: SemanticDomain
+    ) -> None:
+        """Test that operators downgrade to COMPOUND_EXPR."""
+        # Start in simple assignment
+        python_domain._token_buffer = "x"
+        python_domain._update_expression_state("=")
+        python_domain._token_buffer += " = 5"
+
+        # See an operator
+        python_domain._update_expression_state("+")
+
+        state = python_domain._expression_state
+        assert state.context == ExpressionContext.COMPOUND_EXPR
+        assert state.context_confidence == ContextConfidence.LOW
+
+    def test_conditional_transition(self, python_domain: SemanticDomain) -> None:
+        """Test transition to CONDITIONAL on 'if' keyword."""
+        # Start in simple assignment
+        python_domain._token_buffer = "x"
+        python_domain._update_expression_state("=")
+        python_domain._token_buffer += " = 5"
+
+        # See 'if' keyword
+        python_domain._update_expression_state("if")
+
+        state = python_domain._expression_state
+        assert state.context == ExpressionContext.CONDITIONAL
+        assert state.context_confidence == ContextConfidence.MEDIUM
+
+
+class TestCheckpointRestoreExpressionState:
+    """Tests for checkpoint/restore of expression state."""
+
+    def test_checkpoint_preserves_expression_state(
+        self, python_domain: SemanticDomain
+    ) -> None:
+        """Test that checkpoint preserves expression state."""
+        # Set up expression state
+        python_domain._token_buffer = "x"
+        python_domain._update_expression_state("=")
+        python_domain._token_buffer += " ="
+
+        checkpoint = python_domain.checkpoint()
+
+        assert checkpoint.expression_state is not None
+        assert checkpoint.expression_state.context == ExpressionContext.SIMPLE_ASSIGNMENT_RHS
+        assert checkpoint.expression_state.target_variable == "x"
+
+    def test_restore_reverts_expression_state(
+        self, python_domain: SemanticDomain
+    ) -> None:
+        """Test that restore reverts expression state."""
+        # Set up initial state
+        python_domain._token_buffer = "x"
+        python_domain._update_expression_state("=")
+        python_domain._token_buffer += " ="
+
+        checkpoint = python_domain.checkpoint()
+
+        # Modify state
+        python_domain._update_expression_state("+")
+        assert python_domain._expression_state.context == ExpressionContext.COMPOUND_EXPR
+
+        # Restore
+        python_domain.restore(checkpoint)
+        assert python_domain._expression_state.context == ExpressionContext.SIMPLE_ASSIGNMENT_RHS
+        assert python_domain._expression_state.target_variable == "x"

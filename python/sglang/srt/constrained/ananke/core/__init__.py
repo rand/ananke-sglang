@@ -43,6 +43,21 @@ from .checkpoint import (
     UnifiedCheckpoint,
     create_context_snapshot,
 )
+from .token_classifier import (
+    TokenCategory,
+    TokenClassification,
+    TokenClassifier,
+    get_or_create_classifier,
+    clear_classifier_cache,
+    PYTHON_ALL_KEYWORDS,
+    PYTHON_CONTROL_KEYWORDS,
+    PYTHON_DEFINITION_KEYWORDS,
+    PYTHON_IMPORT_KEYWORDS,
+    PYTHON_OPERATOR_KEYWORDS,
+    PYTHON_BUILTINS,
+    PYTHON_OPERATORS,
+    PYTHON_DELIMITERS,
+)
 
 __all__ = [
     # Constraint algebra
@@ -71,4 +86,18 @@ __all__ = [
     "UnifiedCheckpoint",
     "CheckpointManager",
     "create_context_snapshot",
+    # Token classification
+    "TokenCategory",
+    "TokenClassification",
+    "TokenClassifier",
+    "get_or_create_classifier",
+    "clear_classifier_cache",
+    "PYTHON_ALL_KEYWORDS",
+    "PYTHON_CONTROL_KEYWORDS",
+    "PYTHON_DEFINITION_KEYWORDS",
+    "PYTHON_IMPORT_KEYWORDS",
+    "PYTHON_OPERATOR_KEYWORDS",
+    "PYTHON_BUILTINS",
+    "PYTHON_OPERATORS",
+    "PYTHON_DELIMITERS",
 ]
