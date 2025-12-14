@@ -685,3 +685,152 @@ def get_or_create_classifier(
 def clear_classifier_cache() -> None:
     """Clear the global classifier cache."""
     _classifier_cache.clear()
+
+
+# ===========================================================================
+# Language-Specific Classification Dispatch
+# ===========================================================================
+
+
+def get_language_keywords(language: str) -> FrozenSet[str]:
+    """Get all keywords for a programming language.
+
+    Args:
+        language: Language name ("python", "zig", "rust")
+
+    Returns:
+        Frozen set of keyword strings
+    """
+    if language == "python" or language == "py":
+        return PYTHON_ALL_KEYWORDS
+    elif language == "zig":
+        from core.token_classifier_zig import ZIG_ALL_KEYWORDS
+        return ZIG_ALL_KEYWORDS
+    elif language == "rust" or language == "rs":
+        from core.token_classifier_rust import RUST_ALL_KEYWORDS
+        return RUST_ALL_KEYWORDS
+    else:
+        return PYTHON_ALL_KEYWORDS  # Default to Python
+
+
+def get_language_builtins(language: str) -> FrozenSet[str]:
+    """Get all builtins for a programming language.
+
+    Args:
+        language: Language name ("python", "zig", "rust")
+
+    Returns:
+        Frozen set of builtin strings
+    """
+    if language == "python" or language == "py":
+        return PYTHON_BUILTINS
+    elif language == "zig":
+        from core.token_classifier_zig import ZIG_BUILTINS
+        return ZIG_BUILTINS
+    elif language == "rust" or language == "rs":
+        from core.token_classifier_rust import RUST_COMMON_MACROS
+        return RUST_COMMON_MACROS
+    else:
+        return PYTHON_BUILTINS  # Default to Python
+
+
+def classify_token_for_language(
+    text: str,
+    language: str = "python"
+) -> Tuple[TokenCategory, Optional[str], Optional[Any]]:
+    """Classify a single token using language-specific rules.
+
+    This function dispatches to the appropriate language classifier.
+
+    Args:
+        text: The token text to classify
+        language: Programming language ("python", "zig", "rust")
+
+    Returns:
+        Tuple of (category, keyword_name or None, literal_value or None)
+    """
+    stripped = text.strip()
+
+    if language == "zig":
+        from core.token_classifier_zig import classify_zig_token
+        return classify_zig_token(stripped)
+    elif language == "rust" or language == "rs":
+        from core.token_classifier_rust import classify_rust_token
+        return classify_rust_token(stripped)
+    else:
+        # Python (default)
+        return _classify_python_token(stripped)
+
+
+def _classify_python_token(text: str) -> Tuple[TokenCategory, Optional[str], Optional[Any]]:
+    """Classify a Python token.
+
+    Args:
+        text: The stripped token text
+
+    Returns:
+        Tuple of (category, keyword_name or None, literal_value or None)
+    """
+    # Empty
+    if not text:
+        return (TokenCategory.WHITESPACE, None, None)
+
+    # Comment
+    if text.startswith("#"):
+        return (TokenCategory.COMMENT, None, None)
+
+    # Keywords
+    if text in PYTHON_ALL_KEYWORDS:
+        return (TokenCategory.KEYWORD, text, None)
+
+    # Boolean literals
+    if text in ("True", "False"):
+        return (TokenCategory.BOOL_LITERAL, None, text == "True")
+
+    # None literal
+    if text == "None":
+        return (TokenCategory.NONE_LITERAL, None, None)
+
+    # Builtins
+    if text in PYTHON_BUILTINS:
+        return (TokenCategory.BUILTIN, None, None)
+
+    # Operators
+    if text in PYTHON_OPERATORS:
+        return (TokenCategory.OPERATOR, None, None)
+
+    # Delimiters
+    if text in PYTHON_DELIMITERS:
+        return (TokenCategory.DELIMITER, None, None)
+
+    # Numeric literals (simplified check)
+    if text and text[0].isdigit():
+        if "." in text or "e" in text.lower():
+            try:
+                return (TokenCategory.FLOAT_LITERAL, None, float(text))
+            except ValueError:
+                pass
+        else:
+            try:
+                return (TokenCategory.INT_LITERAL, None, int(text, 0))
+            except ValueError:
+                pass
+
+    # String literal check (simplified)
+    if text.startswith(('"', "'", 'f"', "f'", 'r"', "r'", 'b"', "b'")):
+        return (TokenCategory.STRING_LITERAL, None, None)
+
+    # Identifier
+    if text.isidentifier():
+        return (TokenCategory.IDENTIFIER, None, None)
+
+    return (TokenCategory.UNKNOWN, None, None)
+
+
+def supported_classifier_languages() -> List[str]:
+    """Get list of languages with token classifier support.
+
+    Returns:
+        List of supported language names
+    """
+    return ["python", "zig", "rust"]

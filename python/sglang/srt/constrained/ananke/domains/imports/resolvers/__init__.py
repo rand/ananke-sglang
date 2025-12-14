@@ -11,10 +11,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Language-specific import resolvers for Python, TypeScript, Rust, Zig, Go.
+"""Language-specific import resolvers for Python, Zig, Rust, and more.
 
 This module provides import resolution for various languages:
 - PythonImportResolver: Python stdlib and pip packages
+- ZigImportResolver: Zig std library and build.zig.zon dependencies
+- RustImportResolver: Rust std/core/alloc libraries and Cargo.toml dependencies
 - PassthroughResolver: Testing resolver that always succeeds
 - DenyListResolver: Security-focused resolver that blocks specific modules
 """
@@ -25,6 +27,7 @@ from .base import (
     ImportResolver,
     ImportResolution,
     ResolvedModule,
+    ResolutionStatus,
     PassthroughResolver,
     DenyListResolver,
 )
@@ -33,12 +36,29 @@ from .python import (
     PYTHON_STDLIB,
     create_python_resolver,
 )
+from .zig import (
+    ZigImportResolver,
+    ZIG_STD_MODULES,
+    parse_build_zig_zon,
+    create_zig_resolver,
+)
+from .rust import (
+    RustImportResolver,
+    RUST_STD_MODULES,
+    RUST_CORE_MODULES,
+    RUST_ALLOC_MODULES,
+    RUST_STD_TYPES,
+    RUST_POPULAR_CRATES,
+    parse_cargo_toml,
+    create_rust_resolver,
+)
 
 __all__ = [
     # Base types
     "ImportResolver",
     "ImportResolution",
     "ResolvedModule",
+    "ResolutionStatus",
     # Utility resolvers
     "PassthroughResolver",
     "DenyListResolver",
@@ -46,4 +66,18 @@ __all__ = [
     "PythonImportResolver",
     "PYTHON_STDLIB",
     "create_python_resolver",
+    # Zig resolver
+    "ZigImportResolver",
+    "ZIG_STD_MODULES",
+    "parse_build_zig_zon",
+    "create_zig_resolver",
+    # Rust resolver
+    "RustImportResolver",
+    "RUST_STD_MODULES",
+    "RUST_CORE_MODULES",
+    "RUST_ALLOC_MODULES",
+    "RUST_STD_TYPES",
+    "RUST_POPULAR_CRATES",
+    "parse_cargo_toml",
+    "create_rust_resolver",
 ]

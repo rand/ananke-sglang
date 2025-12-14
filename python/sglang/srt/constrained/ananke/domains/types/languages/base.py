@@ -115,6 +115,10 @@ class TypeSystemCapabilities:
         supports_overloading: Whether function overloading is supported
         supports_ownership: Whether ownership/borrowing is tracked (Rust)
         supports_comptime: Whether compile-time evaluation is tracked (Zig)
+        supports_error_unions: Whether error union types are supported (Zig E!T)
+        supports_lifetime_bounds: Whether lifetime annotations are supported (Rust 'a)
+        supports_sentinels: Whether sentinel-terminated types are supported (Zig [*:0]T)
+        supports_allocators: Whether explicit allocator parameters are tracked (Zig)
     """
 
     supports_generics: bool = True
@@ -126,6 +130,10 @@ class TypeSystemCapabilities:
     supports_overloading: bool = False
     supports_ownership: bool = False
     supports_comptime: bool = False
+    supports_error_unions: bool = False
+    supports_lifetime_bounds: bool = False
+    supports_sentinels: bool = False
+    supports_allocators: bool = False
 
 
 class LanguageTypeSystem(ABC):
@@ -336,7 +344,7 @@ def get_type_system(language: str) -> LanguageTypeSystem:
     """Get the type system for a language.
 
     Args:
-        language: The language name (e.g., 'python', 'typescript')
+        language: The language name (e.g., 'python', 'zig', 'rust')
 
     Returns:
         The LanguageTypeSystem for that language
@@ -347,14 +355,30 @@ def get_type_system(language: str) -> LanguageTypeSystem:
     # Import here to avoid circular imports
     from domains.types.languages.python import PythonTypeSystem
 
+    # Build systems dict with available implementations
     systems: Dict[str, type] = {
         "python": PythonTypeSystem,
         "py": PythonTypeSystem,
     }
 
+    # Try to import Zig type system if available
+    try:
+        from domains.types.languages.zig import ZigTypeSystem
+        systems["zig"] = ZigTypeSystem
+    except ImportError:
+        pass
+
+    # Try to import Rust type system if available
+    try:
+        from domains.types.languages.rust import RustTypeSystem
+        systems["rust"] = RustTypeSystem
+        systems["rs"] = RustTypeSystem
+    except ImportError:
+        pass
+
     language_lower = language.lower()
     if language_lower not in systems:
-        supported = ", ".join(sorted(systems.keys()))
+        supported = ", ".join(sorted(set(systems.keys())))
         raise ValueError(
             f"Unsupported language '{language}'. Supported: {supported}"
         )
@@ -366,6 +390,22 @@ def supported_languages() -> List[str]:
     """Return a list of supported language names.
 
     Returns:
-        List of language name strings
+        List of language name strings (canonical names only, not aliases)
     """
-    return ["python"]  # Will grow as more languages are added
+    languages = ["python"]
+
+    # Check for Zig support
+    try:
+        from domains.types.languages.zig import ZigTypeSystem
+        languages.append("zig")
+    except ImportError:
+        pass
+
+    # Check for Rust support
+    try:
+        from domains.types.languages.rust import RustTypeSystem
+        languages.append("rust")
+    except ImportError:
+        pass
+
+    return languages

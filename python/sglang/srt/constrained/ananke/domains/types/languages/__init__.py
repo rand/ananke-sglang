@@ -11,18 +11,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Language-specific type systems for Python, TypeScript, Rust, Zig, Go.
+"""Language-specific type systems for Python, Zig, Rust, and more.
 
 This package provides type system implementations for multiple programming
 languages, enabling language-aware type checking during code generation.
 
 Currently supported:
 - Python (PEP 484 compatible, mypy/pyright semantics)
+- Zig (with full comptime support)
+- Rust (with ownership and lifetime support)
 
 Planned:
 - TypeScript
-- Rust
-- Zig
 - Go
 
 Usage:
@@ -30,9 +30,13 @@ Usage:
     >>>
     >>> # Get a type system by name
     >>> ts = get_type_system("python")
+    >>> zig_ts = get_type_system("zig")
+    >>> rust_ts = get_type_system("rust")
     >>>
     >>> # Parse type annotations
     >>> list_int = ts.parse_type_annotation("List[int]")
+    >>> zig_opt = zig_ts.parse_type_annotation("?i32")
+    >>> rust_ref = rust_ts.parse_type_annotation("&mut i32")
     >>>
     >>> # Check assignability
     >>> ts.check_assignable(INT, FLOAT)  # True (int -> float)
@@ -58,6 +62,48 @@ from domains.types.languages.python import (
     OBJECT,
 )
 
+from domains.types.languages.zig import (
+    ZigTypeSystem,
+    # Primitives
+    ZIG_I8, ZIG_I16, ZIG_I32, ZIG_I64, ZIG_I128, ZIG_ISIZE,
+    ZIG_U8, ZIG_U16, ZIG_U32, ZIG_U64, ZIG_U128, ZIG_USIZE,
+    ZIG_F16, ZIG_F32, ZIG_F64, ZIG_F80, ZIG_F128,
+    ZIG_BOOL, ZIG_VOID, ZIG_NORETURN,
+    ZIG_COMPTIME_INT, ZIG_COMPTIME_FLOAT,
+    ZIG_TYPE, ZIG_ANYTYPE, ZIG_ANYOPAQUE,
+    # Compound types
+    ZigOptionalType,
+    ZigErrorUnionType,
+    ZigPointerType,
+    ZigSliceType,
+    ZigArrayType,
+    ZigFunctionType,
+    ZigVectorType,
+)
+
+from domains.types.languages.rust import (
+    RustTypeSystem,
+    # Primitives
+    RUST_I8, RUST_I16, RUST_I32, RUST_I64, RUST_I128, RUST_ISIZE,
+    RUST_U8, RUST_U16, RUST_U32, RUST_U64, RUST_U128, RUST_USIZE,
+    RUST_F32, RUST_F64,
+    RUST_BOOL, RUST_CHAR, RUST_STR,
+    RUST_UNIT, RUST_NEVER,
+    # Compound types
+    RustReferenceType,
+    RustSliceType,
+    RustArrayType,
+    RustOptionType,
+    RustResultType,
+    RustBoxType,
+    RustRcType,
+    RustVecType,
+    RustStringType,
+    RustFunctionType,
+    RustDynTraitType,
+    RustImplTraitType,
+)
+
 
 __all__ = [
     # Base
@@ -73,4 +119,40 @@ __all__ = [
     "BYTES",
     "COMPLEX",
     "OBJECT",
+    # Zig primitives
+    "ZigTypeSystem",
+    "ZIG_I8", "ZIG_I16", "ZIG_I32", "ZIG_I64", "ZIG_I128", "ZIG_ISIZE",
+    "ZIG_U8", "ZIG_U16", "ZIG_U32", "ZIG_U64", "ZIG_U128", "ZIG_USIZE",
+    "ZIG_F16", "ZIG_F32", "ZIG_F64", "ZIG_F80", "ZIG_F128",
+    "ZIG_BOOL", "ZIG_VOID", "ZIG_NORETURN",
+    "ZIG_COMPTIME_INT", "ZIG_COMPTIME_FLOAT",
+    "ZIG_TYPE", "ZIG_ANYTYPE", "ZIG_ANYOPAQUE",
+    # Zig compound types
+    "ZigOptionalType",
+    "ZigErrorUnionType",
+    "ZigPointerType",
+    "ZigSliceType",
+    "ZigArrayType",
+    "ZigFunctionType",
+    "ZigVectorType",
+    # Rust primitives
+    "RustTypeSystem",
+    "RUST_I8", "RUST_I16", "RUST_I32", "RUST_I64", "RUST_I128", "RUST_ISIZE",
+    "RUST_U8", "RUST_U16", "RUST_U32", "RUST_U64", "RUST_U128", "RUST_USIZE",
+    "RUST_F32", "RUST_F64",
+    "RUST_BOOL", "RUST_CHAR", "RUST_STR",
+    "RUST_UNIT", "RUST_NEVER",
+    # Rust compound types
+    "RustReferenceType",
+    "RustSliceType",
+    "RustArrayType",
+    "RustOptionType",
+    "RustResultType",
+    "RustBoxType",
+    "RustRcType",
+    "RustVecType",
+    "RustStringType",
+    "RustFunctionType",
+    "RustDynTraitType",
+    "RustImplTraitType",
 ]

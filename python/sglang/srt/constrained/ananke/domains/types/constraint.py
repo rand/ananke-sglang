@@ -51,17 +51,28 @@ class Type(ABC):
     - Compound types (function, list, dict, tuple, union)
     - Type variables (for unification)
     - Special types (Any, Never, Hole)
+
+    Note: Subclasses using @dataclass(frozen=True) get __eq__ and __hash__
+    automatically. The free_type_vars() and substitute() methods have default
+    implementations that work for simple types without type variables. Override
+    them in subclasses that contain nested types or type variables.
     """
 
-    @abstractmethod
     def free_type_vars(self) -> FrozenSet[str]:
-        """Return the set of free type variable names in this type."""
-        pass
+        """Return the set of free type variable names in this type.
 
-    @abstractmethod
-    def substitute(self, substitution: Dict[str, Type]) -> Type:
-        """Apply a substitution to this type."""
-        pass
+        Default implementation returns empty set. Override in subclasses
+        that contain type variables or nested types.
+        """
+        return frozenset()
+
+    def substitute(self, substitution: Dict[str, "Type"]) -> "Type":
+        """Apply a substitution to this type.
+
+        Default implementation returns self unchanged. Override in subclasses
+        that contain type variables or nested types.
+        """
+        return self
 
     @abstractmethod
     def __eq__(self, other: object) -> bool:

@@ -18,11 +18,11 @@ supported programming language.
 
 Currently Supported:
     - Python (PythonIncrementalParser)
+    - Zig (ZigIncrementalParser) - with comptime and error union support
+    - Rust (RustIncrementalParser) - with lifetime and ownership tracking
 
 Planned:
     - TypeScript
-    - Rust
-    - Zig
     - Go
 """
 
@@ -30,9 +30,24 @@ from parsing.languages.python import (
     PythonIncrementalParser,
     create_python_parser,
 )
+from parsing.languages.zig import (
+    ZigIncrementalParser,
+    create_zig_parser,
+)
+from parsing.languages.rust import (
+    RustIncrementalParser,
+    create_rust_parser,
+)
 
 
 __all__ = [
+    # Python
     "PythonIncrementalParser",
     "create_python_parser",
+    # Zig
+    "ZigIncrementalParser",
+    "create_zig_parser",
+    # Rust
+    "RustIncrementalParser",
+    "create_rust_parser",
 ]

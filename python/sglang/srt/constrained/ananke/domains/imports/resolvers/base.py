@@ -23,7 +23,24 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Dict, List, Optional, Set
+
+
+class ResolutionStatus(Enum):
+    """Status of import resolution.
+
+    Attributes:
+        RESOLVED: Module fully resolved and available
+        PARTIAL: Some information resolved but not complete (e.g., version unknown)
+        FAILED: Module could not be resolved
+        UNKNOWN: Resolution status not determined
+    """
+
+    RESOLVED = auto()
+    PARTIAL = auto()
+    FAILED = auto()
+    UNKNOWN = auto()
 
 
 @dataclass
@@ -56,20 +73,33 @@ class ImportResolution:
     """Result of resolving an import.
 
     Attributes:
-        success: Whether resolution succeeded
+        status: Resolution status (RESOLVED, PARTIAL, FAILED, UNKNOWN)
+        success: Whether resolution succeeded (for backward compatibility)
         module: The resolved module (if successful)
+        module_name: Name of the module being resolved
         error: Error message (if failed)
         alternatives: Alternative modules that might work
+        exports: Set of exported names (if known)
     """
 
-    success: bool
+    status: ResolutionStatus = ResolutionStatus.UNKNOWN
+    success: bool = False
     module: Optional[ResolvedModule] = None
+    module_name: Optional[str] = None
     error: Optional[str] = None
     alternatives: List[str] = None
+    exports: Set[str] = None
 
     def __post_init__(self):
         if self.alternatives is None:
             self.alternatives = []
+        if self.exports is None:
+            self.exports = set()
+        # Synchronize success with status
+        if self.status == ResolutionStatus.RESOLVED or self.status == ResolutionStatus.PARTIAL:
+            self.success = True
+        elif self.status == ResolutionStatus.FAILED:
+            self.success = False
 
 
 class ImportResolver(ABC):
@@ -171,8 +201,10 @@ class PassthroughResolver(ImportResolver):
     def resolve(self, module_name: str) -> ImportResolution:
         """Always successfully resolves."""
         return ImportResolution(
+            status=ResolutionStatus.RESOLVED,
             success=True,
             module=ResolvedModule(name=module_name, is_available=True),
+            module_name=module_name,
         )
 
     def is_available(self, module_name: str) -> bool:
@@ -215,7 +247,9 @@ class DenyListResolver(ImportResolver):
         """Resolve, denying specific modules."""
         if module_name in self._denied:
             return ImportResolution(
+                status=ResolutionStatus.FAILED,
                 success=False,
+                module_name=module_name,
                 error=f"Module '{module_name}' is not allowed",
             )
         return self._fallback.resolve(module_name)
