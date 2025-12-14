@@ -21,7 +21,7 @@ Tests mathematical properties that type systems should satisfy:
 """
 
 import pytest
-from hypothesis import given, strategies as st, assume, settings
+from hypothesis import given, strategies as st, assume, settings, HealthCheck
 
 from domains.types.languages.zig import (
     ZigTypeSystem,
@@ -384,14 +384,14 @@ try:
             return ZigTypeSystem()
 
         @given(type_name=zig_primitive_strategy)
-        @settings(max_examples=50)
+        @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
         def test_parse_never_fails_on_primitives(self, ts, type_name):
             """Parsing primitives should never fail."""
             typ = ts.parse_type_annotation(type_name)
             assert typ is not None
 
         @given(type_name=zig_primitive_strategy)
-        @settings(max_examples=50)
+        @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
         def test_format_produces_nonempty(self, ts, type_name):
             """Formatting should produce non-empty string."""
             typ = ts.parse_type_annotation(type_name)
@@ -406,14 +406,14 @@ try:
             return RustTypeSystem()
 
         @given(type_name=rust_primitive_strategy)
-        @settings(max_examples=50)
+        @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
         def test_parse_never_fails_on_primitives(self, ts, type_name):
             """Parsing primitives should never fail."""
             typ = ts.parse_type_annotation(type_name)
             assert typ is not None
 
         @given(type_name=rust_primitive_strategy)
-        @settings(max_examples=50)
+        @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
         def test_format_produces_nonempty(self, ts, type_name):
             """Formatting should produce non-empty string."""
             typ = ts.parse_type_annotation(type_name)

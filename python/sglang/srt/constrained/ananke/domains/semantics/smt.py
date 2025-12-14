@@ -97,6 +97,16 @@ class SMTCheckResult:
         """Check if result is UNKNOWN."""
         return self.result == SMTResult.UNKNOWN
 
+    @property
+    def is_timeout(self) -> bool:
+        """Check if result is TIMEOUT."""
+        return self.result == SMTResult.TIMEOUT
+
+    @property
+    def is_error(self) -> bool:
+        """Check if result is ERROR."""
+        return self.result == SMTResult.ERROR
+
 
 def is_z3_available() -> bool:
     """Check if Z3 is available."""
@@ -234,9 +244,23 @@ class Z3Solver(SMTSolver):
                 core = self._extract_unsat_core()
                 return SMTCheckResult(result=SMTResult.UNSAT, unsat_core=core)
             else:
+                # Z3 returned unknown - check if it was a timeout
+                reason = self._solver.reason_unknown()
+                if reason in ("timeout", "canceled"):
+                    return SMTCheckResult(
+                        result=SMTResult.TIMEOUT,
+                        error=f"Solver timeout: {reason}",
+                    )
                 return SMTCheckResult(result=SMTResult.UNKNOWN)
 
         except Exception as e:
+            # Check for timeout-related exceptions
+            error_msg = str(e).lower()
+            if "timeout" in error_msg or "canceled" in error_msg:
+                return SMTCheckResult(
+                    result=SMTResult.TIMEOUT,
+                    error=str(e),
+                )
             return SMTCheckResult(result=SMTResult.ERROR, error=str(e))
 
     def _parse_formula(self, expression: str) -> Optional[Any]:
@@ -385,3 +409,34 @@ def create_smt_solver(use_z3: bool = True, timeout_ms: int = 5000) -> Incrementa
         Configured IncrementalSMTSolver
     """
     return IncrementalSMTSolver(use_z3=use_z3, timeout_ms=timeout_ms)
+
+
+def create_timeout_triggering_formulas(count: int = 100) -> List[SMTFormula]:
+    """Create a set of formulas likely to trigger solver timeout.
+
+    This is a helper for testing timeout handling. Creates a set of
+    variables with constraints that require exponential search.
+
+    Args:
+        count: Number of boolean variables to create
+
+    Returns:
+        List of SMTFormulas that are hard to solve
+    """
+    formulas = []
+
+    # Create many interrelated boolean variables
+    # This creates a satisfiability problem that's hard for the solver
+    for i in range(count):
+        # Each variable depends on many others
+        if i > 0:
+            # XOR-like constraints are hard
+            expr = f"(x{i} != x{i-1})"
+            formulas.append(SMTFormula(expression=expr, kind=FormulaKind.ASSERTION))
+
+        # Add arbitrary constraints
+        if i > 5:
+            expr = f"(x{i} or x{i-3} or x{i-5})"
+            formulas.append(SMTFormula(expression=expr, kind=FormulaKind.ASSERTION))
+
+    return formulas

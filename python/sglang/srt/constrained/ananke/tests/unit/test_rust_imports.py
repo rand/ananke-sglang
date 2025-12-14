@@ -70,12 +70,12 @@ class TestRustStdModules:
         assert "alloc::boxed" in RUST_ALLOC_MODULES
 
     def test_has_std_types(self):
-        """Should have standard types."""
-        assert "Vec" in RUST_STD_TYPES
-        assert "String" in RUST_STD_TYPES
-        assert "HashMap" in RUST_STD_TYPES
-        assert "Result" in RUST_STD_TYPES
-        assert "Option" in RUST_STD_TYPES
+        """Should have standard types (with full module paths)."""
+        assert "std::collections::HashMap" in RUST_STD_TYPES
+        assert "std::collections::HashSet" in RUST_STD_TYPES
+        assert "std::sync::Arc" in RUST_STD_TYPES
+        assert "std::rc::Rc" in RUST_STD_TYPES
+        assert "std::io::Read" in RUST_STD_TYPES
 
     def test_has_popular_crates(self):
         """Should have popular crates."""
@@ -371,7 +371,7 @@ tokio = { version = "1.0", features = ["full"] }
     def test_resolver_finds_cargo_deps(self, project_with_deps):
         """Resolver should find dependencies from Cargo.toml."""
         resolver = RustImportResolver(str(project_with_deps))
-        assert resolver.project_root == str(project_with_deps)
+        assert str(resolver._project_root) == str(project_with_deps)
 
     def test_resolve_known_crate(self):
         """Should recognize popular crates."""

@@ -31,6 +31,7 @@ References:
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import (
@@ -97,6 +98,39 @@ class TypeCacheEntry:
 
 
 @dataclass
+class TypeCacheStats:
+    """Statistics for type cache performance.
+
+    Attributes:
+        hits: Number of cache hits
+        misses: Number of cache misses
+        evictions: Number of entries evicted due to capacity
+        re_checks: Number of entries that were rechecked after invalidation
+    """
+
+    hits: int = 0
+    misses: int = 0
+    evictions: int = 0
+    re_checks: int = 0
+
+    @property
+    def hit_rate(self) -> float:
+        """Get cache hit rate."""
+        total = self.hits + self.misses
+        return self.hits / total if total > 0 else 0.0
+
+    def reset(self) -> None:
+        """Reset all statistics to zero."""
+        self.hits = 0
+        self.misses = 0
+        self.evictions = 0
+        self.re_checks = 0
+
+
+# Default maximum size for TypeCache (5000 entries ~ 3-4 MB)
+DEFAULT_TYPE_CACHE_MAX_SIZE = 5000
+
+
 class TypeCache:
     """Cache of type checking results for incremental reuse.
 
@@ -105,20 +139,45 @@ class TypeCache:
     - An order maintenance list for dependency ordering
     - The dependency graph linking nodes
 
+    Uses LRU eviction to bound memory growth during long generation sequences.
+    Following the pattern from MaskCache, uses OrderedDict for O(1) access ordering.
+
     Attributes:
-        _entries: Map from node ID to cache entry
+        _entries: Ordered map from node ID to cache entry (LRU order)
         _order: Order maintenance structure for topological ordering
         _order_elements: Map from node ID to order element
         _dependencies: The dependency graph
+        _max_size: Maximum number of entries before eviction
+        _stats: Cache statistics
     """
 
-    _entries: Dict[NodeId, TypeCacheEntry] = field(default_factory=dict)
-    _order: OrderMaintenanceList[NodeId] = field(default_factory=create_order_list)
-    _order_elements: Dict[NodeId, OrderedElement[NodeId]] = field(default_factory=dict)
-    _dependencies: DependencyGraph = field(default_factory=create_dependency_graph)
+    def __init__(self, max_size: int = DEFAULT_TYPE_CACHE_MAX_SIZE) -> None:
+        """Initialize the type cache.
+
+        Args:
+            max_size: Maximum number of entries (default 5000)
+        """
+        self._entries: OrderedDict[NodeId, TypeCacheEntry] = OrderedDict()
+        self._order: OrderMaintenanceList[NodeId] = create_order_list()
+        self._order_elements: Dict[NodeId, OrderedElement[NodeId]] = {}
+        self._dependencies: DependencyGraph = create_dependency_graph()
+        self._max_size = max_size
+        self._stats = TypeCacheStats()
+
+    @property
+    def max_size(self) -> int:
+        """Get maximum cache size."""
+        return self._max_size
+
+    @property
+    def stats(self) -> TypeCacheStats:
+        """Get cache statistics."""
+        return self._stats
 
     def get(self, node_id: NodeId) -> Optional[TypeCacheEntry]:
         """Get the cache entry for a node.
+
+        Updates LRU order on access (moves to end = most recently used).
 
         Args:
             node_id: The node to look up
@@ -126,10 +185,20 @@ class TypeCache:
         Returns:
             The cache entry, or None if not cached
         """
-        return self._entries.get(node_id)
+        entry = self._entries.get(node_id)
+        if entry is None:
+            self._stats.misses += 1
+            return None
+
+        # Move to end (most recently used) on access
+        self._entries.move_to_end(node_id)
+        self._stats.hits += 1
+        return entry
 
     def get_type(self, node_id: NodeId) -> Optional[Type]:
         """Get the synthesized type for a node.
+
+        Does not update LRU order (use get() for full entry access).
 
         Args:
             node_id: The node to look up
@@ -138,7 +207,29 @@ class TypeCache:
             The synthesized type, or None if not cached
         """
         entry = self._entries.get(node_id)
+        if entry is not None:
+            # Move to end on access
+            self._entries.move_to_end(node_id)
         return entry.synthesized_type if entry else None
+
+    def _evict_if_needed(self) -> None:
+        """Evict least recently used entries if at capacity.
+
+        Removes entries from the front of the OrderedDict (oldest access).
+        Also cleans up order maintenance and dependency tracking.
+        """
+        while len(self._entries) >= self._max_size:
+            # Remove least recently used (front of OrderedDict)
+            evicted_node_id, _ = self._entries.popitem(last=False)
+            self._stats.evictions += 1
+
+            # Clean up order maintenance
+            if evicted_node_id in self._order_elements:
+                self._order.delete(self._order_elements[evicted_node_id])
+                del self._order_elements[evicted_node_id]
+
+            # Clean up dependency graph
+            self._dependencies.remove_node(evicted_node_id)
 
     def set(
         self,
@@ -151,6 +242,8 @@ class TypeCache:
     ) -> TypeCacheEntry:
         """Set or update a cache entry.
 
+        Evicts LRU entries if at capacity before adding new entries.
+
         Args:
             node_id: The node to cache
             mode: Synthesis or analysis mode
@@ -162,6 +255,10 @@ class TypeCache:
         Returns:
             The created or updated cache entry
         """
+        # Evict if needed before adding new entry
+        if node_id not in self._entries:
+            self._evict_if_needed()
+
         entry = TypeCacheEntry(
             node_id=node_id,
             mode=mode,
@@ -172,6 +269,9 @@ class TypeCache:
             is_dirty=False,
         )
         self._entries[node_id] = entry
+
+        # Move to end (most recently used)
+        self._entries.move_to_end(node_id)
 
         # Add to order maintenance if new
         if node_id not in self._order_elements:
@@ -257,11 +357,15 @@ class TypeCache:
         return self._dependencies
 
     def clear(self) -> None:
-        """Clear all cached entries."""
+        """Clear all cached entries (does not reset stats)."""
         self._entries.clear()
         self._order = create_order_list()
         self._order_elements.clear()
         self._dependencies.clear()
+
+    def reset_stats(self) -> None:
+        """Reset cache statistics."""
+        self._stats.reset()
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -269,7 +373,11 @@ class TypeCache:
     def __repr__(self) -> str:
         valid = sum(1 for e in self._entries.values() if not e.is_dirty)
         dirty = len(self._entries) - valid
-        return f"TypeCache(valid={valid}, dirty={dirty})"
+        return (
+            f"TypeCache(size={len(self._entries)}/{self._max_size}, "
+            f"valid={valid}, dirty={dirty}, "
+            f"hit_rate={self._stats.hit_rate:.2%})"
+        )
 
 
 @dataclass
@@ -306,14 +414,19 @@ class DeltaTypingEngine:
     performs actual type checking for a single node.
     """
 
-    def __init__(self, checker: TypeChecker):
+    def __init__(
+        self,
+        checker: TypeChecker,
+        cache_max_size: int = DEFAULT_TYPE_CACHE_MAX_SIZE,
+    ):
         """Initialize the delta typing engine.
 
         Args:
             checker: Function to type-check a single node
+            cache_max_size: Maximum size for the type cache (default 5000)
         """
         self._checker = checker
-        self._cache = TypeCache()
+        self._cache = TypeCache(max_size=cache_max_size)
 
     @property
     def cache(self) -> TypeCache:
@@ -526,13 +639,29 @@ def snapshot_cache(cache: TypeCache) -> TypeCacheSnapshot:
     return TypeCacheSnapshot(entries=entries)
 
 
-def create_delta_engine(checker: TypeChecker) -> DeltaTypingEngine:
+def create_type_cache(max_size: int = DEFAULT_TYPE_CACHE_MAX_SIZE) -> TypeCache:
+    """Factory function to create a TypeCache.
+
+    Args:
+        max_size: Maximum number of entries (default 5000)
+
+    Returns:
+        New TypeCache instance with LRU eviction
+    """
+    return TypeCache(max_size=max_size)
+
+
+def create_delta_engine(
+    checker: TypeChecker,
+    cache_max_size: int = DEFAULT_TYPE_CACHE_MAX_SIZE,
+) -> DeltaTypingEngine:
     """Create a new delta typing engine.
 
     Args:
         checker: The type checking function
+        cache_max_size: Maximum size for the type cache
 
     Returns:
         A new DeltaTypingEngine
     """
-    return DeltaTypingEngine(checker)
+    return DeltaTypingEngine(checker, cache_max_size=cache_max_size)

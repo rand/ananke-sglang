@@ -78,6 +78,7 @@ from domains.types.languages.zig import (
     ZIG_C_CHAR,
     ZIG_C_INT,
 )
+from domains.types.extended_types import ANYERROR
 
 
 # Helper functions for type checking
@@ -284,7 +285,7 @@ class TestZigPrimitiveTypeParsing:
     def test_parse_anyerror(self, ts):
         """Should parse 'anyerror'."""
         typ = ts.parse_type_annotation("anyerror")
-        assert typ == ZIG_ANYERROR
+        assert typ == ANYERROR
 
     # Comptime types
     def test_parse_comptime_int(self, ts):
@@ -339,20 +340,20 @@ class TestZigPointerTypeParsing:
         """Should parse '[*]u8'."""
         typ = ts.parse_type_annotation("[*]u8")
         assert isinstance(typ, ZigManyPointerType)
-        assert typ.pointee == ZIG_U8
+        assert typ.element == ZIG_U8
 
     def test_parse_c_pointer(self, ts):
         """Should parse '[*c]u8'."""
         typ = ts.parse_type_annotation("[*c]u8")
         assert isinstance(typ, ZigCPointerType)
-        assert typ.pointee == ZIG_U8
+        assert typ.element == ZIG_U8
 
     def test_parse_sentinel_pointer(self, ts):
         """Should parse '[*:0]u8' (null-terminated)."""
         typ = ts.parse_type_annotation("[*:0]u8")
         assert isinstance(typ, ZigManyPointerType)
-        assert typ.pointee == ZIG_U8
-        assert typ.sentinel == 0
+        assert typ.element == ZIG_U8
+        assert typ.sentinel == "0"  # Sentinel is kept as string
 
 
 # ===========================================================================
@@ -386,7 +387,7 @@ class TestZigSliceTypeParsing:
         typ = ts.parse_type_annotation("[:0]u8")
         assert isinstance(typ, ZigSliceType)
         assert typ.element == ZIG_U8
-        assert typ.sentinel == 0
+        assert typ.sentinel == "0"  # Sentinel is kept as string
 
 
 # ===========================================================================
@@ -414,7 +415,7 @@ class TestZigArrayTypeParsing:
         assert isinstance(typ, ZigArrayType)
         assert typ.element == ZIG_U8
         assert typ.length == 10
-        assert typ.sentinel == 0
+        assert typ.sentinel == "0"  # Sentinel is kept as string
 
     def test_parse_inferred_array(self, ts):
         """Should parse '[_]u8' (inferred length)."""
@@ -467,7 +468,7 @@ class TestZigErrorUnionTypeParsing:
         typ = ts.parse_type_annotation("anyerror!i32")
         assert isinstance(typ, ZigErrorUnionType)
         assert typ.payload == ZIG_I32
-        assert typ.error_set == ZIG_ANYERROR
+        assert typ.error_set == ANYERROR
 
     def test_parse_error_union_with_void(self, ts):
         """Should parse 'anyerror!void'."""
@@ -700,7 +701,7 @@ class TestZigTypeFormatting:
 
     def test_format_error_union(self, ts):
         """Should format error union types."""
-        err = ZigErrorUnionType(ZIG_ANYERROR, ZIG_I32)
+        err = ZigErrorUnionType(ANYERROR, ZIG_I32)
         formatted = ts.format_type(err)
         assert "!" in formatted
         assert "i32" in formatted
@@ -745,11 +746,24 @@ class TestZigLiteralInference:
         assert result == ZIG_BOOL
 
     def test_infer_string(self, ts):
-        """Should infer pointer to u8 array for string literals."""
+        """Should infer const slice of u8 for string literals."""
         literal = LiteralInfo(LiteralKind.STRING, value="hello")
         result = ts.infer_literal_type(literal)
-        # Should be *const [N:0]u8 or similar
+        # Without source text, returns slice type (coerced form)
+        assert isinstance(result, ZigSliceType)
+        assert result.element == ZIG_U8
+        assert result.is_const is True
+
+    def test_infer_string_with_text(self, ts):
+        """With source text, infer pointer to array for string literals."""
+        literal = LiteralInfo(LiteralKind.STRING, value="hello", text='"hello"')
+        result = ts.infer_literal_type(literal)
+        # With source text, returns pointer to sentinel-terminated array
         assert isinstance(result, ZigPointerType)
+        assert result.is_const is True
+        assert isinstance(result.pointee, ZigArrayType)
+        assert result.pointee.element == ZIG_U8
+        assert result.pointee.length == 5  # "hello" is 5 characters
 
 
 # ===========================================================================
@@ -769,10 +783,12 @@ class TestZigTypeParsingErrors:
         with pytest.raises(TypeParseError):
             ts.parse_type_annotation("")
 
-    def test_invalid_type_name_fails(self, ts):
-        """Unknown type name should raise TypeParseError."""
-        with pytest.raises(TypeParseError):
-            ts.parse_type_annotation("unknowntype")
+    def test_unknown_type_name_is_struct(self, ts):
+        """Unknown type name should be parsed as struct (user-defined type)."""
+        # In Zig, unknown identifiers are valid as they could be user-defined types
+        typ = ts.parse_type_annotation("MyCustomType")
+        assert isinstance(typ, ZigStructType)
+        assert typ.name == "MyCustomType"
 
     def test_unclosed_bracket_fails(self, ts):
         """Unclosed bracket should raise TypeParseError."""

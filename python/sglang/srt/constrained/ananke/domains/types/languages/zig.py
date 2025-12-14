@@ -105,6 +105,7 @@ ZIG_TYPE = PrimitiveType("type")
 ZIG_ANYTYPE = PrimitiveType("anytype")
 ZIG_ANYOPAQUE = PrimitiveType("anyopaque")
 ZIG_ANYFRAME = PrimitiveType("anyframe")
+ZIG_ANYERROR = PrimitiveType("anyerror")
 
 # Comptime types
 ZIG_COMPTIME_INT = PrimitiveType("comptime_int")
@@ -682,6 +683,12 @@ class ZigTypeSystem(LanguageTypeSystem):
         """Parse a type string recursively."""
         s = s.strip()
 
+        # Check for function type first: fn(...) T
+        # This must come before error union check because fn(T) E!T
+        # should parse as fn returning E!T, not as error union
+        if s.startswith("fn(") or s.startswith("fn ("):
+            return self._parse_function_type(s)
+
         # Check for error union: E!T
         if "!" in s and not s.startswith("@"):
             excl_pos = self._find_error_union_split(s)
@@ -708,10 +715,6 @@ class ZigTypeSystem(LanguageTypeSystem):
         # Check for many-pointer or array: [*]T, [*:0]T, [*c]T, [N]T
         if s.startswith("["):
             return self._parse_bracket_type(s)
-
-        # Check for function type: fn(...) T
-        if s.startswith("fn(") or s.startswith("fn ("):
-            return self._parse_function_type(s)
 
         # Check for builtins: @Vector, @TypeOf, etc.
         if s.startswith("@"):
@@ -818,7 +821,10 @@ class ZigTypeSystem(LanguageTypeSystem):
     def _parse_bracket_type(self, s: str) -> Type:
         """Parse [*]T, [*:0]T, [*c]T, [N]T, [N:0]T."""
         # Find matching ]
-        bracket_end = s.index("]")
+        try:
+            bracket_end = s.index("]")
+        except ValueError:
+            raise TypeParseError(s, "Unclosed bracket in type")
         inside = s[1:bracket_end]
         rest = s[bracket_end + 1:].strip()
 
@@ -1073,17 +1079,17 @@ class ZigTypeSystem(LanguageTypeSystem):
         if source == target:
             return True
 
-        # anytype accepts anything
-        if target == ZIG_ANYTYPE:
+        # anytype accepts anything (in both directions for generic context)
+        if target == ZIG_ANYTYPE or source == ZIG_ANYTYPE:
+            return True
+
+        # noreturn is assignable to anything (bottom type)
+        if source == ZIG_NORETURN:
             return True
 
         # void is only assignable to void
         if target == ZIG_VOID:
             return source == ZIG_VOID
-
-        # noreturn is assignable to anything
-        if source == ZIG_NORETURN:
-            return True
 
         # Comptime integer coercion
         if source == ZIG_COMPTIME_INT:

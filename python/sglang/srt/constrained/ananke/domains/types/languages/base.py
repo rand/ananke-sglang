@@ -78,6 +78,7 @@ class LiteralKind(Enum):
     INTEGER = auto()
     FLOAT = auto()
     STRING = auto()
+    CHARACTER = auto()  # For Rust char, Zig u8/u21
     BOOLEAN = auto()
     NONE = auto()
     LIST = auto()

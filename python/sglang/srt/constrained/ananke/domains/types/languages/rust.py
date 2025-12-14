@@ -1024,6 +1024,9 @@ class RustTypeSystem(LanguageTypeSystem):
         elif literal.kind == LiteralKind.BOOLEAN:
             return RUST_BOOL
 
+        elif literal.kind == LiteralKind.CHARACTER:
+            return RUST_CHAR
+
         else:
             return ANY
 

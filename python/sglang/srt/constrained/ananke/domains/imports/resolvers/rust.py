@@ -791,6 +791,64 @@ class RustImportResolver(ImportResolver):
                 self._cargo_deps = {}
 
 
+def extract_rust_exports(source: str) -> Set[str]:
+    """Extract public exports from Rust source code.
+
+    This function uses regex patterns to find public items:
+    - pub fn name
+    - pub const NAME
+    - pub static NAME
+    - pub struct Name
+    - pub enum Name
+    - pub trait Name
+    - pub type Name
+    - pub mod name
+
+    Args:
+        source: Rust source code
+
+    Returns:
+        Set of exported symbol names
+    """
+    import re
+
+    exports: Set[str] = set()
+
+    # Pattern for pub fn
+    for match in re.finditer(r'pub\s+fn\s+(\w+)', source):
+        exports.add(match.group(1))
+
+    # Pattern for pub const
+    for match in re.finditer(r'pub\s+const\s+(\w+)', source):
+        exports.add(match.group(1))
+
+    # Pattern for pub static
+    for match in re.finditer(r'pub\s+static\s+(\w+)', source):
+        exports.add(match.group(1))
+
+    # Pattern for pub struct
+    for match in re.finditer(r'pub\s+struct\s+(\w+)', source):
+        exports.add(match.group(1))
+
+    # Pattern for pub enum
+    for match in re.finditer(r'pub\s+enum\s+(\w+)', source):
+        exports.add(match.group(1))
+
+    # Pattern for pub trait
+    for match in re.finditer(r'pub\s+trait\s+(\w+)', source):
+        exports.add(match.group(1))
+
+    # Pattern for pub type
+    for match in re.finditer(r'pub\s+type\s+(\w+)', source):
+        exports.add(match.group(1))
+
+    # Pattern for pub mod
+    for match in re.finditer(r'pub\s+mod\s+(\w+)', source):
+        exports.add(match.group(1))
+
+    return exports
+
+
 def create_rust_resolver(
     project_root: Optional[str] = None,
 ) -> RustImportResolver:
