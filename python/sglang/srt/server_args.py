@@ -137,7 +137,7 @@ LORA_BACKEND_CHOICES = ["triton", "csgmv", "ascend", "torch_native"]
 
 DISAGG_TRANSFER_BACKEND_CHOICES = ["mooncake", "nixl", "ascend", "fake"]
 
-GRAMMAR_BACKEND_CHOICES = ["xgrammar", "outlines", "llguidance", "none"]
+GRAMMAR_BACKEND_CHOICES = ["xgrammar", "outlines", "llguidance", "ananke", "none"]
 
 DETERMINISTIC_ATTENTION_BACKEND_CHOICES = ["flashinfer", "fa3", "triton"]
 
@@ -313,6 +313,12 @@ class ServerArgs:
     random_seed: Optional[int] = None
     constrained_json_whitespace_pattern: Optional[str] = None
     constrained_json_disable_any_whitespace: bool = False
+
+    # Ananke constrained generation backend options
+    ananke_language: str = "python"
+    ananke_max_rollback_tokens: int = 200
+    ananke_enabled_domains: Optional[str] = None  # Comma-separated: "syntax,types,imports"
+
     watchdog_timeout: float = 300
     soft_watchdog_timeout: Optional[float] = None
     dist_timeout: Optional[int] = None  # timeout for torch.distributed
@@ -2664,6 +2670,28 @@ class ServerArgs:
             action="store_true",
             help="(xgrammar and llguidance backends only) Enforce compact representation in JSON constrained output.",
         )
+
+        # Ananke backend options
+        parser.add_argument(
+            "--ananke-language",
+            type=str,
+            default=ServerArgs.ananke_language,
+            choices=["python", "typescript", "go", "rust", "kotlin", "swift", "zig"],
+            help="(ananke backend only) Target programming language for type checking and import resolution.",
+        )
+        parser.add_argument(
+            "--ananke-max-rollback-tokens",
+            type=int,
+            default=ServerArgs.ananke_max_rollback_tokens,
+            help="(ananke backend only) Maximum rollback history in tokens for speculative decoding support (default: 200).",
+        )
+        parser.add_argument(
+            "--ananke-enabled-domains",
+            type=str,
+            default=ServerArgs.ananke_enabled_domains,
+            help="(ananke backend only) Comma-separated list of domains to enable: syntax,types,imports,controlflow,semantics. Default: all domains enabled.",
+        )
+
         parser.add_argument(
             "--watchdog-timeout",
             type=float,

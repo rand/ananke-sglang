@@ -91,6 +91,31 @@ class FunctionEdge(PropagationEdge):
 
     This allows defining edge behavior with a simple callable.
 
+    WARNING: MONOTONICITY REQUIREMENT
+    ---------------------------------
+    The propagate_fn MUST maintain monotonicity: the returned constraint
+    must be at least as restrictive as target_constraint. Formally:
+
+        target_constraint.meet(result) == result
+
+    Violating monotonicity can cause:
+    - Non-convergence of the propagation network
+    - Incorrect constraint states
+    - Unbounded iteration in the worklist algorithm
+
+    Safe patterns that guarantee monotonicity:
+    - Return target_constraint unchanged (identity)
+    - Return target_constraint.meet(something) (refinement)
+    - Return BOTTOM when detecting unsatisfiability
+
+    Unsafe patterns that may violate monotonicity:
+    - Returning a completely different constraint
+    - Loosening restrictions based on source
+    - Conditionally returning TOP
+
+    The PropagationNetwork will log warnings but not prevent non-monotonic
+    updates. It is the caller's responsibility to ensure monotonicity.
+
     Attributes:
         propagate_fn: Function to compute new target constraint
     """

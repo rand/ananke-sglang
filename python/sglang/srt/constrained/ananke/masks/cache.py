@@ -104,9 +104,24 @@ class CacheStats:
 
     @property
     def hit_rate(self) -> float:
-        """Get cache hit rate."""
+        """Get cache hit rate as a fraction (0.0 to 1.0)."""
         total = self.hits + self.misses
         return self.hits / total if total > 0 else 0.0
+
+    @property
+    def hit_rate_percent(self) -> float:
+        """Get cache hit rate as a percentage."""
+        return self.hit_rate * 100.0
+
+    @property
+    def total_requests(self) -> int:
+        """Get total number of cache requests."""
+        return self.hits + self.misses
+
+    @property
+    def time_saved_ms(self) -> float:
+        """Get total compute time saved in milliseconds."""
+        return self.total_compute_time_saved_ns / 1_000_000.0
 
     def reset(self) -> None:
         """Reset statistics."""
@@ -114,6 +129,21 @@ class CacheStats:
         self.misses = 0
         self.evictions = 0
         self.total_compute_time_saved_ns = 0
+
+    def summary(self) -> str:
+        """Get a human-readable summary of cache performance.
+
+        Returns:
+            Multi-line string with cache statistics
+        """
+        lines = [
+            "Cache Statistics:",
+            f"  Requests: {self.total_requests} (hits: {self.hits}, misses: {self.misses})",
+            f"  Hit rate: {self.hit_rate_percent:.1f}%",
+            f"  Evictions: {self.evictions}",
+            f"  Time saved: {self.time_saved_ms:.2f}ms",
+        ]
+        return "\n".join(lines)
 
 
 class MaskCache:

@@ -356,16 +356,13 @@ class TestTypeConstraintSemilattice:
 
     @given(c=type_constraint_strategy())
     def test_identity_law(self, c: TypeConstraint):
-        """c ⊓ ⊤ = c (identity law)."""
+        """c ⊓ ⊤ = c (identity law).
+
+        The meet() implementation returns self directly when other is TOP,
+        so this should be exact equality (not just expected_type match).
+        """
         result = c.meet(TYPE_TOP)
-        # For type constraints, meet with TOP returns the constraint
-        # but environment_hash takes max, so we check key properties
-        if c.is_top():
-            assert result.is_top()
-        elif c.is_bottom():
-            assert result.is_bottom()
-        else:
-            assert result.expected_type == c.expected_type
+        assert result == c, f"Identity law violated: {c}.meet(TYPE_TOP) = {result} != {c}"
 
     @given(c=type_constraint_strategy())
     def test_annihilation_law(self, c: TypeConstraint):
