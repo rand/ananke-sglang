@@ -51,6 +51,9 @@ class SamplingParams:
         regex: Optional[str] = None,
         ebnf: Optional[str] = None,
         structural_tag: Optional[str] = None,
+        # SGLang extension: Rich constraint specification for Ananke backend
+        constraint_spec: Optional[Dict[str, Any]] = None,
+        constraint_uri: Optional[str] = None,
         ignore_eos: bool = False,
         skip_special_tokens: bool = True,
         spaces_between_special_tokens: bool = True,
@@ -80,6 +83,9 @@ class SamplingParams:
         self.json_schema = json_schema
         self.ebnf = ebnf
         self.structural_tag = structural_tag
+        # SGLang extension: Rich constraint specification for Ananke backend
+        self.constraint_spec = constraint_spec
+        self.constraint_uri = constraint_uri
         self.ignore_eos = ignore_eos
         self.skip_special_tokens = skip_special_tokens
         self.spaces_between_special_tokens = spaces_between_special_tokens

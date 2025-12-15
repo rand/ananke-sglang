@@ -1442,37 +1442,89 @@ class Scheduler(
 
         # Init grammar cache for this request
         add_to_grammar_queue = False
-        if (
+        has_constraint = (
             req.sampling_params.json_schema is not None
             or req.sampling_params.regex is not None
             or req.sampling_params.ebnf is not None
             or req.sampling_params.structural_tag is not None
-        ):
+            or req.sampling_params.constraint_spec is not None
+        )
+        if has_constraint:
             if self.grammar_backend is None:
-                error_msg = "Grammar-based generation (json_schema, regex, ebnf, structural_tag) is not supported when the server is launched with --grammar-backend none"
+                error_msg = "Grammar-based generation (json_schema, regex, ebnf, structural_tag, constraint_spec) is not supported when the server is launched with --grammar-backend none"
                 req.set_finish_with_abort(error_msg)
             else:
-                if req.sampling_params.json_schema is not None:
-                    key = ("json", req.sampling_params.json_schema)
-                elif req.sampling_params.regex is not None:
-                    key = ("regex", req.sampling_params.regex)
-                elif req.sampling_params.ebnf is not None:
-                    key = ("ebnf", req.sampling_params.ebnf)
-                elif req.sampling_params.structural_tag:
-                    key = ("structural_tag", req.sampling_params.structural_tag)
+                # Check for rich constraint specification (SGLang extension for Ananke)
+                if req.sampling_params.constraint_spec is not None:
+                    # Use constraint_spec dispatch path with ConstraintSpec object
+                    try:
+                        from sglang.srt.constrained.ananke.spec.constraint_spec import (
+                            ConstraintSpec,
+                        )
 
-                value, cache_hit = self.grammar_backend.get_cached_or_future_value(
-                    key, req.require_reasoning
-                )
-                req.grammar = value
+                        spec_dict = req.sampling_params.constraint_spec
+                        spec = ConstraintSpec.from_dict(spec_dict)
+                        value, cache_hit = (
+                            self.grammar_backend.get_cached_or_future_with_spec(
+                                spec, req.require_reasoning
+                            )
+                        )
+                        req.grammar = value
+                        if not cache_hit:
+                            # Store spec for grammar compilation
+                            req.constraint_spec = spec
+                            add_to_grammar_queue = True
+                        else:
+                            if value is INVALID_GRAMMAR_OBJ:
+                                error_msg = f"Invalid constraint_spec grammar request"
+                                req.set_finish_with_abort(error_msg)
+                    except ImportError:
+                        # Fall back to legacy dispatch if ananke not available
+                        spec_dict = req.sampling_params.constraint_spec
+                        if spec_dict.get("json_schema"):
+                            key = ("json", spec_dict.get("json_schema"))
+                        elif spec_dict.get("regex"):
+                            key = ("regex", spec_dict.get("regex"))
+                        elif spec_dict.get("ebnf"):
+                            key = ("ebnf", spec_dict.get("ebnf"))
+                        else:
+                            import json
 
-                if not cache_hit:
-                    req.grammar_key = key
-                    add_to_grammar_queue = True
+                            key = ("constraint_spec", json.dumps(spec_dict, sort_keys=True))
+                        value, cache_hit = self.grammar_backend.get_cached_or_future_value(
+                            key, req.require_reasoning
+                        )
+                        req.grammar = value
+                        if not cache_hit:
+                            req.grammar_key = key
+                            add_to_grammar_queue = True
+                        else:
+                            if value is INVALID_GRAMMAR_OBJ:
+                                error_msg = f"Invalid grammar request with cache hit: {key=}"
+                                req.set_finish_with_abort(error_msg)
                 else:
-                    if value is INVALID_GRAMMAR_OBJ:  # We hit a cached invalid grammar.
-                        error_msg = f"Invalid grammar request with cache hit: {key=}"
-                        req.set_finish_with_abort(error_msg)
+                    # Legacy constraint dispatch
+                    if req.sampling_params.json_schema is not None:
+                        key = ("json", req.sampling_params.json_schema)
+                    elif req.sampling_params.regex is not None:
+                        key = ("regex", req.sampling_params.regex)
+                    elif req.sampling_params.ebnf is not None:
+                        key = ("ebnf", req.sampling_params.ebnf)
+                    elif req.sampling_params.structural_tag:
+                        key = ("structural_tag", req.sampling_params.structural_tag)
+
+                    value, cache_hit = self.grammar_backend.get_cached_or_future_value(
+                        key, req.require_reasoning
+                    )
+                    req.grammar = value
+
+                    if not cache_hit:
+                        req.grammar_key = key
+                        add_to_grammar_queue = True
+                    else:
+                        if value is INVALID_GRAMMAR_OBJ:  # We hit a cached invalid grammar.
+                            error_msg = f"Invalid grammar request with cache hit: {key=}"
+                            req.set_finish_with_abort(error_msg)
 
         if add_to_grammar_queue:
             self.grammar_queue.append(req)
