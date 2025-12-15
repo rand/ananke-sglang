@@ -31,11 +31,92 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Generic, List, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Dict, Generic, List, Optional, Tuple, TypeVar
 
 import torch
 
 from .constraint import Constraint, Satisfiability
+
+
+class MaskPool:
+    """Pre-allocated tensor pool to avoid per-token CUDA allocations.
+
+    Token mask computation is called on every token. Creating new tensors
+    each time adds allocation overhead (~100μs on GPU). This pool maintains
+    a fixed set of pre-allocated tensors that can be reused.
+
+    Usage:
+        pool = MaskPool(vocab_size=32000, device="cuda", pool_size=8)
+        mask, handle = pool.acquire()
+        # use mask...
+        pool.release(handle)
+
+    Thread Safety:
+        This class is NOT thread-safe. Each thread should have its own pool,
+        or external synchronization should be used.
+    """
+
+    def __init__(self, vocab_size: int, device: str, pool_size: int = 8):
+        """Initialize the mask pool.
+
+        Args:
+            vocab_size: Size of vocabulary (mask dimension)
+            device: PyTorch device ("cpu", "cuda", etc.)
+            pool_size: Number of tensors to pre-allocate
+        """
+        self._vocab_size = vocab_size
+        self._device = device
+        self._pool: List[torch.Tensor] = [
+            torch.ones(vocab_size, dtype=torch.bool, device=device)
+            for _ in range(pool_size)
+        ]
+        self._available: List[int] = list(range(pool_size))
+
+    def acquire(self, fill_value: bool = True) -> Tuple[torch.Tensor, int]:
+        """Acquire a mask tensor from the pool.
+
+        Args:
+            fill_value: Initial fill value (True for all-valid, False for all-blocked)
+
+        Returns:
+            Tuple of (tensor, handle). Use handle with release().
+            Handle is -1 if a fallback allocation was used.
+        """
+        if not self._available:
+            # Pool exhausted - allocate new tensor (rare case)
+            return (
+                torch.full(
+                    (self._vocab_size,),
+                    fill_value,
+                    dtype=torch.bool,
+                    device=self._device,
+                ),
+                -1,
+            )
+
+        handle = self._available.pop()
+        mask = self._pool[handle]
+        mask.fill_(fill_value)
+        return mask, handle
+
+    def release(self, handle: int) -> None:
+        """Return a mask tensor to the pool.
+
+        Args:
+            handle: Handle from acquire(). Ignored if -1 (fallback allocation).
+        """
+        if handle >= 0 and handle not in self._available:
+            self._available.append(handle)
+
+    @property
+    def available_count(self) -> int:
+        """Number of tensors currently available in the pool."""
+        return len(self._available)
+
+    @property
+    def pool_size(self) -> int:
+        """Total size of the pool."""
+        return len(self._pool)
 
 if TYPE_CHECKING:
     from .checkpoint import Checkpoint
@@ -65,6 +146,7 @@ class GenerationContext:
         language: Programming language being generated (e.g., "python", "rust")
         tokenizer: Reference to the tokenizer (for decode operations)
         metadata: Additional domain-specific metadata
+        mask_pool: Optional pre-allocated tensor pool for mask computation
     """
 
     generated_text: str = ""
@@ -75,6 +157,7 @@ class GenerationContext:
     language: str = "python"
     tokenizer: Optional[Any] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    mask_pool: Optional[MaskPool] = None
 
     def extend(self, token_id: int, token_text: str) -> GenerationContext:
         """Create a new context with an additional token.
@@ -98,7 +181,40 @@ class GenerationContext:
             language=self.language,
             tokenizer=self.tokenizer,
             metadata=self.metadata.copy(),
+            mask_pool=self.mask_pool,  # Share the pool across contexts
         )
+
+    def acquire_mask(self, fill_value: bool = True) -> Tuple[torch.Tensor, int]:
+        """Acquire a mask tensor, using pool if available.
+
+        Args:
+            fill_value: Initial fill value for the mask
+
+        Returns:
+            Tuple of (tensor, handle). Handle is -1 if no pool or fallback.
+        """
+        if self.mask_pool is not None:
+            return self.mask_pool.acquire(fill_value)
+
+        # No pool - allocate directly
+        return (
+            torch.full(
+                (self.vocab_size,),
+                fill_value,
+                dtype=torch.bool,
+                device=self.device,
+            ),
+            -1,
+        )
+
+    def release_mask(self, handle: int) -> None:
+        """Release a mask tensor back to the pool.
+
+        Args:
+            handle: Handle from acquire_mask(). Ignored if -1.
+        """
+        if self.mask_pool is not None and handle >= 0:
+            self.mask_pool.release(handle)
 
 
 class ConstraintDomain(ABC, Generic[C]):

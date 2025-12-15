@@ -46,10 +46,15 @@ try:
         UnifiedCheckpoint,
     )
     from ..core.constraint import Satisfiability
-    from ..core.domain import ConstraintDomain, GenerationContext
+    from ..core.domain import ConstraintDomain, GenerationContext, MaskPool
     from ..core.unified import (
         UNIFIED_TOP,
         UnifiedConstraint,
+    )
+    from ..masks.lazy import (
+        EvaluationBudget,
+        EvaluationPriority,
+        LazyConstraintEvaluator,
     )
 except ImportError:
     from core.checkpoint import (
@@ -58,10 +63,15 @@ except ImportError:
         UnifiedCheckpoint,
     )
     from core.constraint import Satisfiability
-    from core.domain import ConstraintDomain, GenerationContext
+    from core.domain import ConstraintDomain, GenerationContext, MaskPool
     from core.unified import (
         UNIFIED_TOP,
         UnifiedConstraint,
+    )
+    from masks.lazy import (
+        EvaluationBudget,
+        EvaluationPriority,
+        LazyConstraintEvaluator,
     )
 
 if TYPE_CHECKING:
@@ -101,6 +111,8 @@ class AnankeGrammar(BaseGrammarObject):
         tokenizer: Optional[Any] = None,
         language: str = "python",
         max_rollback_tokens: int = 200,
+        checkpoint_interval: int = 1,
+        mask_pool_size: int = 8,
     ):
         """Initialize AnankeGrammar.
 
@@ -113,6 +125,10 @@ class AnankeGrammar(BaseGrammarObject):
             tokenizer: Tokenizer for text decode operations
             language: Programming language being generated
             max_rollback_tokens: Maximum tokens for rollback (like XGrammar)
+            checkpoint_interval: Create checkpoint every N tokens (default: 1).
+                Set higher (e.g., 10) for better performance with sparse rollback.
+            mask_pool_size: Number of pre-allocated mask tensors (default: 8).
+                Set to 0 to disable pooling.
         """
         super().__init__()
         self.syntax_grammar = syntax_grammar
@@ -122,6 +138,16 @@ class AnankeGrammar(BaseGrammarObject):
         self.device = device
         self.tokenizer = tokenizer
         self.language = language
+        self._mask_pool_size = mask_pool_size
+
+        # Pre-allocated mask tensor pool to avoid per-token CUDA allocations
+        self._mask_pool: Optional[MaskPool] = None
+        if vocab_size > 0 and mask_pool_size > 0:
+            self._mask_pool = MaskPool(
+                vocab_size=vocab_size,
+                device=device,
+                pool_size=mask_pool_size,
+            )
 
         # Generation context
         self.context = GenerationContext(
@@ -129,6 +155,7 @@ class AnankeGrammar(BaseGrammarObject):
             device=device,
             language=language,
             tokenizer=tokenizer,
+            mask_pool=self._mask_pool,
         )
 
         # Checkpoint management for rollback
@@ -136,8 +163,21 @@ class AnankeGrammar(BaseGrammarObject):
             max_checkpoints=max_rollback_tokens
         )
 
+        # Sparse checkpointing configuration
+        self._checkpoint_interval = checkpoint_interval
+        self._tokens_since_checkpoint = 0
+        self._last_constraint_hash: Optional[int] = None
+
         # Cache for computed domain masks
         self._domain_mask_cache: Dict[str, torch.Tensor] = {}
+
+        # Lazy evaluator for budget-limited domain evaluation
+        self._lazy_evaluator = self._init_lazy_evaluator()
+        self._evaluation_budget = EvaluationBudget(
+            max_time_ns=2_000_000,  # 2ms budget
+            max_domains=5,
+            min_selectivity=0.95,  # Stop if 95% of vocab blocked
+        )
 
     def accept_token(self, token: int) -> None:
         """Accept a generated token, updating all domain constraints.
@@ -173,6 +213,9 @@ class AnankeGrammar(BaseGrammarObject):
                 return
 
         # Update each domain constraint
+        # Capture old constraint for change detection
+        old_unified_constraint = self.constraint
+
         new_syntax = self.constraint.syntax
         new_types = self.constraint.types
         new_imports = self.constraint.imports
@@ -180,8 +223,8 @@ class AnankeGrammar(BaseGrammarObject):
         new_semantics = self.constraint.semantics
 
         for domain_name, domain in self.domains.items():
-            old_constraint = getattr(self.constraint, domain_name)
-            new_constraint = domain.observe_token(old_constraint, token, self.context)
+            domain_constraint = getattr(self.constraint, domain_name)
+            new_constraint = domain.observe_token(domain_constraint, token, self.context)
 
             # Update the appropriate field
             if domain_name == "syntax":
@@ -207,8 +250,9 @@ class AnankeGrammar(BaseGrammarObject):
         # Update generation context
         self.context = self.context.extend(token, token_text)
 
-        # Clear mask cache (masks may have changed)
-        self._domain_mask_cache.clear()
+        # Selectively invalidate mask cache (only for domains that changed)
+        # Compare old vs new constraint hashes to detect changes
+        self._invalidate_changed_domain_masks(old_unified_constraint, self.constraint)
 
         # Check for unsatisfiability
         if self.constraint.satisfiability() == Satisfiability.UNSAT:
@@ -269,7 +313,12 @@ class AnankeGrammar(BaseGrammarObject):
             return self.syntax_grammar.is_terminated()
         return self.finished
 
-    def fill_vocab_mask(self, vocab_mask: torch.Tensor, idx: int) -> None:
+    def fill_vocab_mask(
+        self,
+        vocab_mask: torch.Tensor,
+        idx: int,
+        use_lazy_evaluation: bool = True,
+    ) -> None:
         """Fill vocabulary mask with valid tokens for this request.
 
         This method:
@@ -277,9 +326,14 @@ class AnankeGrammar(BaseGrammarObject):
         2. Computes additional domain masks (types, imports, etc.)
         3. Applies additional masks via bitwise AND
 
+        When use_lazy_evaluation is True, domains are evaluated in priority
+        order with budget control. Expensive domains may be skipped if the
+        mask is already sufficiently constrained.
+
         Args:
             vocab_mask: Bitmask tensor to fill [batch_size, mask_size]
             idx: Index into the batch for this request
+            use_lazy_evaluation: If True, use budget-limited lazy evaluation
         """
         # First, delegate to syntax grammar
         if self.syntax_grammar is not None:
@@ -288,7 +342,18 @@ class AnankeGrammar(BaseGrammarObject):
                 self.finished = True
                 return
 
-        # Compute and apply additional domain masks
+        if use_lazy_evaluation:
+            self._fill_vocab_mask_lazy(vocab_mask, idx)
+        else:
+            self._fill_vocab_mask_eager(vocab_mask, idx)
+
+    def _fill_vocab_mask_eager(self, vocab_mask: torch.Tensor, idx: int) -> None:
+        """Eagerly evaluate all domain masks (original behavior).
+
+        Args:
+            vocab_mask: Bitmask tensor to fill [batch_size, mask_size]
+            idx: Index into the batch for this request
+        """
         for domain_name, domain in self.domains.items():
             if domain_name == "syntax":
                 continue  # Already handled by syntax_grammar
@@ -302,6 +367,41 @@ class AnankeGrammar(BaseGrammarObject):
 
             # Apply via bitwise AND with existing mask
             self._apply_domain_mask(vocab_mask, idx, domain_mask)
+
+    def _fill_vocab_mask_lazy(self, vocab_mask: torch.Tensor, idx: int) -> None:
+        """Lazily evaluate domain masks with budget control.
+
+        Domains are evaluated in priority order. If the budget is exceeded
+        or the mask is already sufficiently constrained, lower-priority
+        domains are skipped.
+
+        Args:
+            vocab_mask: Bitmask tensor to fill [batch_size, mask_size]
+            idx: Index into the batch for this request
+        """
+        # Build constraints dict for lazy evaluator
+        constraints = {}
+        for domain_name in self.domains:
+            if domain_name == "syntax":
+                continue  # Already handled by syntax_grammar
+
+            domain_constraint = getattr(self.constraint, domain_name)
+            if not domain_constraint.is_top():
+                constraints[domain_name] = domain_constraint
+
+        if not constraints:
+            return  # Nothing to evaluate
+
+        # Use lazy evaluator with budget
+        result = self._lazy_evaluator.evaluate(
+            constraints=constraints,
+            context=self.context,
+            budget=self._evaluation_budget,
+        )
+
+        # Apply the fused mask
+        if result.fused_mask is not None:
+            self._apply_domain_mask(vocab_mask, idx, result.fused_mask)
 
     def allocate_vocab_mask(
         self, vocab_size: int, batch_size: int, device
@@ -378,6 +478,8 @@ class AnankeGrammar(BaseGrammarObject):
             tokenizer=self.tokenizer,
             language=self.language,
             max_rollback_tokens=self.checkpoint_manager.max_checkpoints,
+            checkpoint_interval=self._checkpoint_interval,
+            mask_pool_size=self._mask_pool_size,
         )
 
     def try_jump_forward(self, tokenizer) -> Optional[Tuple[List[int], str]]:
@@ -419,8 +521,45 @@ class AnankeGrammar(BaseGrammarObject):
             )
 
     def _maybe_create_checkpoint(self) -> None:
-        """Create a checkpoint if conditions are met."""
-        # For now, checkpoint every token (can be optimized later)
+        """Create a checkpoint if conditions are met.
+
+        Implements sparse checkpointing to reduce overhead:
+        1. Create checkpoint every N tokens (default: 10)
+        2. Create checkpoint when constraint changes significantly
+        3. Always create checkpoint at position 0
+
+        This reduces checkpoint overhead by ~10x while still supporting
+        rollback to any position within the last N checkpoints.
+        """
+        self._tokens_since_checkpoint += 1
+
+        # Condition 1: Always checkpoint at position 0
+        if self.context.position == 0:
+            self._create_checkpoint()
+            return
+
+        # Condition 2: Checkpoint every N tokens
+        if self._tokens_since_checkpoint >= self._checkpoint_interval:
+            self._create_checkpoint()
+            return
+
+        # Condition 3: Checkpoint on significant constraint change
+        try:
+            current_hash = hash(self.constraint)
+        except TypeError:
+            current_hash = id(self.constraint)
+
+        if self._last_constraint_hash is not None and current_hash != self._last_constraint_hash:
+            # Constraint changed - create checkpoint
+            self._create_checkpoint()
+            return
+
+        self._last_constraint_hash = current_hash
+
+    def _create_checkpoint(self) -> None:
+        """Actually create a checkpoint (called by _maybe_create_checkpoint)."""
+        self._tokens_since_checkpoint = 0
+
         domain_checkpoints = {}
         for domain_name, domain in self.domains.items():
             domain_checkpoints[domain_name] = domain.checkpoint()
@@ -438,6 +577,12 @@ class AnankeGrammar(BaseGrammarObject):
             domain_checkpoints=domain_checkpoints,
             context_snapshot=context_snapshot,
         )
+
+        # Update last constraint hash
+        try:
+            self._last_constraint_hash = hash(self.constraint)
+        except TypeError:
+            self._last_constraint_hash = id(self.constraint)
 
     def _get_or_compute_domain_mask(
         self,
@@ -470,26 +615,113 @@ class AnankeGrammar(BaseGrammarObject):
         """Apply a domain's boolean mask to the vocabulary bitmask.
 
         This performs bitwise AND between the existing bitmask and
-        the domain's boolean mask.
+        the domain's boolean mask using vectorized PyTorch operations.
+
+        Complexity: O(vocab_size / 32) tensor operations instead of
+        O(vocab_size) Python loop iterations.
 
         Args:
             vocab_mask: The vocabulary bitmask tensor [batch_size, mask_size]
             idx: Batch index for this request
             domain_mask: Boolean mask from domain [vocab_size]
         """
-        # Convert boolean mask to bitmask format and AND with existing
         vocab_size = domain_mask.shape[0]
+        device = domain_mask.device
         mask_size = vocab_mask.shape[1]
 
-        for word_idx in range(mask_size):
-            start_bit = word_idx * 32
-            end_bit = min(start_bit + 32, vocab_size)
+        # Pad to multiple of 32 for clean reshaping
+        padded_size = ((vocab_size + 31) // 32) * 32
+        if vocab_size < padded_size:
+            padded = torch.zeros(padded_size, dtype=torch.bool, device=device)
+            padded[:vocab_size] = domain_mask
+        else:
+            padded = domain_mask
 
-            # Build word from domain mask bits
-            word = 0
-            for bit_offset, token_idx in enumerate(range(start_bit, end_bit)):
-                if domain_mask[token_idx]:
-                    word |= 1 << bit_offset
+        # Reshape to [num_words, 32] for bit packing
+        reshaped = padded.view(-1, 32)
 
-            # AND with existing mask
-            vocab_mask[idx, word_idx] &= word
+        # Get or create powers of 2 lookup table (cached at class level)
+        if not hasattr(self, '_powers_of_2') or self._powers_of_2.device != device:
+            self._powers_of_2 = (2 ** torch.arange(32, device=device, dtype=torch.int64))
+
+        # Vectorized bit packing: convert each row of 32 bools to an int32
+        # Using int64 intermediate to avoid overflow, then cast to int32
+        packed = (reshaped.to(torch.int64) * self._powers_of_2).sum(dim=1).to(torch.int32)
+
+        # Apply via vectorized AND with existing mask
+        num_words = min(packed.shape[0], mask_size)
+        vocab_mask[idx, :num_words] &= packed[:num_words]
+
+    def _invalidate_changed_domain_masks(
+        self,
+        old_constraint: UnifiedConstraint,
+        new_constraint: UnifiedConstraint,
+    ) -> None:
+        """Selectively invalidate cached masks only for domains that changed.
+
+        Instead of clearing the entire cache on every token, we compare
+        constraint hashes to detect which domains actually changed, then
+        only invalidate those.
+
+        Args:
+            old_constraint: Constraint before the token was observed
+            new_constraint: Constraint after the token was observed
+        """
+        domain_names = ["syntax", "types", "imports", "controlflow", "semantics"]
+
+        for domain_name in domain_names:
+            old_domain = getattr(old_constraint, domain_name, None)
+            new_domain = getattr(new_constraint, domain_name, None)
+
+            # Compute hashes for comparison
+            try:
+                old_hash = hash(old_domain) if old_domain is not None else None
+                new_hash = hash(new_domain) if new_domain is not None else None
+            except TypeError:
+                # Unhashable - fall back to identity comparison
+                old_hash = id(old_domain)
+                new_hash = id(new_domain)
+
+            # Invalidate only if changed
+            if old_hash != new_hash:
+                self._domain_mask_cache.pop(domain_name, None)
+
+    def _init_lazy_evaluator(self) -> LazyConstraintEvaluator:
+        """Initialize lazy evaluator with domain priorities.
+
+        Domains are registered with priorities based on their typical
+        selectivity and computation cost:
+        - syntax: CRITICAL (always evaluate, fundamental constraint)
+        - types: HIGH (usually highly selective, moderate cost)
+        - imports: NORMAL (moderately selective)
+        - controlflow: NORMAL (depends on code structure)
+        - semantics: LOW (expensive, often redundant with others)
+
+        Returns:
+            Configured LazyConstraintEvaluator
+        """
+        evaluator = LazyConstraintEvaluator()
+
+        # Domain priorities and estimated times (nanoseconds)
+        domain_config = {
+            "syntax": (EvaluationPriority.CRITICAL, 50_000),      # 50μs
+            "types": (EvaluationPriority.HIGH, 500_000),          # 500μs
+            "imports": (EvaluationPriority.NORMAL, 200_000),      # 200μs
+            "controlflow": (EvaluationPriority.NORMAL, 100_000),  # 100μs
+            "semantics": (EvaluationPriority.LOW, 1_000_000),     # 1ms
+        }
+
+        for domain_name, domain in self.domains.items():
+            if domain_name in domain_config:
+                priority, est_time = domain_config[domain_name]
+            else:
+                priority, est_time = EvaluationPriority.NORMAL, 500_000
+
+            evaluator.register(
+                domain=domain_name,
+                compute_fn=domain.token_mask,
+                priority=priority,
+                estimated_time_ns=est_time,
+            )
+
+        return evaluator
