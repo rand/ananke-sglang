@@ -480,6 +480,15 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
         if expected is None or isinstance(expected, AnyType):
             return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
 
+        # Handle HoleType: use its expected type if available (Hazel-style hole-aware masking)
+        if isinstance(expected, HoleType):
+            if expected.expected is not None:
+                # Use the hole's expected type for masking
+                expected = expected.expected
+            else:
+                # Hole with no expected type - allow all tokens
+                return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+
         # Ensure classifier and mask cache are initialized
         self._ensure_classifier_initialized(context)
 

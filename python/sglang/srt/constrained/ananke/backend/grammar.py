@@ -56,6 +56,8 @@ try:
         EvaluationPriority,
         LazyConstraintEvaluator,
     )
+    from ..propagation.network import PropagationNetwork
+    from ..propagation.edges import create_standard_edges
 except ImportError:
     from core.checkpoint import (
         Checkpoint,
@@ -73,6 +75,8 @@ except ImportError:
         EvaluationPriority,
         LazyConstraintEvaluator,
     )
+    from propagation.network import PropagationNetwork
+    from propagation.edges import create_standard_edges
 
 if TYPE_CHECKING:
     from sglang.srt.constrained.llguidance_backend import GuidanceGrammar
@@ -179,6 +183,9 @@ class AnankeGrammar(BaseGrammarObject):
             min_selectivity=0.95,  # Stop if 95% of vocab blocked
         )
 
+        # Propagation network for cross-domain constraint flow
+        self._propagation_network = self._init_propagation_network()
+
     def accept_token(self, token: int) -> None:
         """Accept a generated token, updating all domain constraints.
 
@@ -249,6 +256,9 @@ class AnankeGrammar(BaseGrammarObject):
 
         # Update generation context
         self.context = self.context.extend(token, token_text)
+
+        # Run cross-domain propagation to share constraint information
+        self._run_propagation()
 
         # Selectively invalidate mask cache (only for domains that changed)
         # Compare old vs new constraint hashes to detect changes
@@ -725,3 +735,71 @@ class AnankeGrammar(BaseGrammarObject):
             )
 
         return evaluator
+
+    def _init_propagation_network(self) -> PropagationNetwork:
+        """Initialize cross-domain propagation network.
+
+        Creates a PropagationNetwork with all registered domains and
+        standard propagation edges. The network enables constraint
+        information to flow between domains (e.g., imports informing
+        type environment, types informing control flow).
+
+        Returns:
+            Configured PropagationNetwork with standard edges
+        """
+        network = PropagationNetwork(max_iterations=100)
+
+        # Register all domains with their current constraints
+        for domain_name, domain in self.domains.items():
+            constraint = getattr(self.constraint, domain_name, None)
+            network.register_domain(domain, constraint)
+
+        # Add standard propagation edges
+        for edge in create_standard_edges():
+            # Only add edge if both source and target domains exist
+            if edge.source in self.domains or edge.source == "syntax":
+                if edge.target in self.domains or edge.target == "syntax":
+                    network.add_edge(edge)
+
+        return network
+
+    def _run_propagation(self) -> None:
+        """Run cross-domain constraint propagation.
+
+        Updates the propagation network with current constraints, runs
+        propagation until fixpoint, then updates the unified constraint
+        with any refinements from propagation.
+
+        This enables:
+        - Imports → Types: Imported modules extend type environment
+        - Types → ControlFlow: Return types validate return statements
+        - Syntax → Types: Function calls inform callable expectations
+        """
+        # Update network with current constraints
+        for domain_name in self.domains:
+            constraint = getattr(self.constraint, domain_name, None)
+            if constraint is not None:
+                self._propagation_network.set_constraint(domain_name, constraint)
+
+        # Run propagation
+        result = self._propagation_network.propagate(self.context)
+
+        if not result.is_success:
+            for error in result.errors:
+                logger.debug(f"Propagation error: {error}")
+
+        # Extract updated constraints from network
+        if result.changed_domains:
+            new_syntax = self._propagation_network.get_constraint("syntax") or self.constraint.syntax
+            new_types = self._propagation_network.get_constraint("types") or self.constraint.types
+            new_imports = self._propagation_network.get_constraint("imports") or self.constraint.imports
+            new_controlflow = self._propagation_network.get_constraint("controlflow") or self.constraint.controlflow
+            new_semantics = self._propagation_network.get_constraint("semantics") or self.constraint.semantics
+
+            self.constraint = UnifiedConstraint(
+                syntax=new_syntax,
+                types=new_types,
+                imports=new_imports,
+                controlflow=new_controlflow,
+                semantics=new_semantics,
+            )

@@ -523,6 +523,7 @@ class TypeConstraint(Constraint["TypeConstraint"]):
         combined_equations = self.equations | other.equations
 
         # Combine environment hash (take max for commutativity)
+        # Note: We assume environment_hash is always non-negative
         combined_env_hash = max(self.environment_hash, other.environment_hash)
 
         return TypeConstraint(

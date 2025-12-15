@@ -25,7 +25,7 @@ and validates against control flow constraints.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, FrozenSet, List, Optional, Set
+from typing import Any, Dict, FrozenSet, List, Optional, Set, TYPE_CHECKING
 
 import torch
 
@@ -47,6 +47,8 @@ try:
     )
     from .cfg import BasicBlock, CFGBuilder, CFGEdge, CFGSketch, EdgeKind
     from .reachability import ReachabilityAnalyzer, ReachabilityResult
+    from ...parsing.base import IncrementalParser, ParseState
+    from ...parsing.languages.python import PythonIncrementalParser
 except ImportError:
     from core.constraint import Satisfiability
     from core.domain import ConstraintDomain, GenerationContext
@@ -65,6 +67,8 @@ except ImportError:
     )
     from domains.controlflow.cfg import BasicBlock, CFGBuilder, CFGEdge, CFGSketch, EdgeKind
     from domains.controlflow.reachability import ReachabilityAnalyzer, ReachabilityResult
+    from parsing.base import IncrementalParser, ParseState
+    from parsing.languages.python import PythonIncrementalParser
 
 
 @dataclass
@@ -76,12 +80,16 @@ class ControlFlowDomainCheckpoint:
         current_block_id: Current block being built
         block_counter: Block counter value
         control_stack: Copy of control structure stack
+        parser_checkpoint: Optional parser checkpoint for AST-based detection
+        token_buffer: Token buffer for pattern-based detection
     """
 
     cfg: CFGSketch
     current_block_id: Optional[str]
     block_counter: int
     control_stack: List[Dict[str, Any]]
+    parser_checkpoint: Optional[Any] = None
+    token_buffer: str = ""
 
 
 class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
@@ -102,12 +110,23 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
         >>> # As code is generated, constraint is validated against CFG
     """
 
-    def __init__(self, language: str = "python", tokenizer: Optional[Any] = None):
+    def __init__(
+        self,
+        language: str = "python",
+        tokenizer: Optional[Any] = None,
+        parser: Optional[IncrementalParser] = None,
+        use_ast_detection: bool = True,
+    ):
         """Initialize the control flow domain.
 
         Args:
             language: Programming language (affects construct detection)
             tokenizer: Optional tokenizer for precise masking
+            parser: Optional incremental parser for AST-based detection.
+                   If not provided and use_ast_detection is True, a
+                   language-appropriate parser will be created.
+            use_ast_detection: Whether to use AST-based detection (more
+                   accurate) instead of pattern-based detection (fallback).
         """
         self._language = language
         self._cfg = CFGSketch()
@@ -124,6 +143,19 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
         self._return_tokens: FrozenSet[int] = frozenset()
         self._break_tokens: FrozenSet[int] = frozenset()
         self._continue_tokens: FrozenSet[int] = frozenset()
+
+        # AST-based detection using incremental parser
+        self._use_ast_detection = use_ast_detection
+        if parser is not None:
+            self._parser: Optional[IncrementalParser] = parser
+        elif use_ast_detection and language == "python":
+            self._parser = PythonIncrementalParser()
+        else:
+            self._parser = None
+
+        # Track AST state for control flow detection
+        self._last_ast_hash: Optional[int] = None
+        self._detected_constructs: Set[str] = set()
 
     def _ensure_classifier_initialized(self, context: GenerationContext) -> None:
         """Ensure classifier is initialized and keyword sets are precomputed.
@@ -161,6 +193,11 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
     def language(self) -> str:
         """Return the target language."""
         return self._language
+
+    @property
+    def parser(self) -> Optional[IncrementalParser]:
+        """Return the incremental parser, if available."""
+        return self._parser
 
     @property
     def cfg(self) -> CFGSketch:
@@ -306,8 +343,12 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
             except Exception:
                 pass
 
-        # Accumulate token text
+        # Accumulate token text for pattern-based detection fallback
         self._token_buffer += token_text
+
+        # Update parser with token text if using AST detection
+        if self._parser is not None and self._use_ast_detection:
+            self._parser.extend_with_text(token_text)
 
         # Detect control flow constructs
         self._detect_control_flow()
@@ -318,12 +359,106 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
         return constraint
 
     def _detect_control_flow(self) -> None:
-        """Detect control flow constructs in the token buffer."""
+        """Detect control flow constructs in the token buffer.
+
+        Uses AST-based detection if a parser is available, otherwise
+        falls back to pattern-based detection.
+        """
+        # Try AST-based detection first if parser available
+        if self._parser is not None and self._use_ast_detection:
+            self._detect_control_flow_from_ast()
+            return
+
+        # Fall back to pattern-based detection
         if self._language == "python":
             self._detect_python_control_flow()
         elif self._language == "typescript":
             self._detect_typescript_control_flow()
         # Other languages can be added
+
+    def _detect_control_flow_from_ast(self) -> None:
+        """Detect control flow constructs using AST-based parsing.
+
+        This provides more accurate detection than pattern matching
+        by using the incremental parser to build a proper AST.
+        """
+        if self._parser is None:
+            return
+
+        # Parse the current source
+        result = self._parser.extend_with_text("")  # No new text, just get current state
+        if result.ast is None:
+            return
+
+        # Get unique identifier for current AST state
+        ast_hash = hash(str(result.ast))
+        if ast_hash == self._last_ast_hash:
+            # AST hasn't changed, no new constructs to detect
+            return
+
+        self._last_ast_hash = ast_hash
+
+        # Walk the AST and detect control flow constructs
+        self._walk_ast_for_control_flow(result.ast)
+
+    def _walk_ast_for_control_flow(self, node: Any) -> None:
+        """Walk AST and detect control flow constructs.
+
+        Args:
+            node: MarkedASTNode to walk
+        """
+        try:
+            from ...domains.types.marking.marked_ast import ASTNodeKind
+        except ImportError:
+            from domains.types.marking.marked_ast import ASTNodeKind
+
+        # Skip if already detected this construct
+        node_id = id(node)
+        if node_id in self._detected_constructs:
+            return
+
+        self._detected_constructs.add(str(node_id))
+
+        # Detect based on node kind
+        kind = node.kind if hasattr(node, 'kind') else None
+
+        if kind == ASTNodeKind.FUNCTION_DEF:
+            source = node.data.get("source", "") if node.data else ""
+            self._start_function(source)
+
+        elif kind == ASTNodeKind.IF:
+            source = node.data.get("source", "") if node.data else ""
+            self._start_if(source)
+
+        elif kind == ASTNodeKind.WHILE:
+            source = node.data.get("source", "") if node.data else ""
+            self._start_loop("while", source)
+
+        elif kind == ASTNodeKind.FOR:
+            source = node.data.get("source", "") if node.data else ""
+            self._start_loop("for", source)
+
+        elif kind == ASTNodeKind.RETURN:
+            source = node.data.get("source", "") if node.data else ""
+            self._add_return(source)
+
+        elif kind == ASTNodeKind.BREAK:
+            self._add_break()
+
+        elif kind == ASTNodeKind.CONTINUE:
+            self._add_continue()
+
+        elif kind == ASTNodeKind.TRY:
+            self._start_try()
+
+        elif kind == ASTNodeKind.EXCEPT:
+            source = node.data.get("source", "") if node.data else ""
+            self._continue_try(source)
+
+        # Recurse into children
+        if hasattr(node, 'children'):
+            for child in node.children:
+                self._walk_ast_for_control_flow(child)
 
     def _detect_python_control_flow(self) -> None:
         """Detect Python control flow constructs."""
@@ -678,11 +813,18 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
             exit_ids=self._cfg.exit_ids.copy(),
         )
 
+        # Get parser checkpoint if available
+        parser_checkpoint = None
+        if self._parser is not None:
+            parser_checkpoint = self._parser.checkpoint()
+
         return ControlFlowDomainCheckpoint(
             cfg=cfg_copy,
             current_block_id=self._current_block_id,
             block_counter=self._block_counter,
             control_stack=[ctx.copy() for ctx in self._control_stack],
+            parser_checkpoint=parser_checkpoint,
+            token_buffer=self._token_buffer,
         )
 
     def restore(self, checkpoint: Any) -> None:
@@ -700,6 +842,15 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
         self._current_block_id = checkpoint.current_block_id
         self._block_counter = checkpoint.block_counter
         self._control_stack = [ctx.copy() for ctx in checkpoint.control_stack]
+        self._token_buffer = checkpoint.token_buffer
+
+        # Restore parser state if available
+        if self._parser is not None and checkpoint.parser_checkpoint is not None:
+            self._parser.restore(checkpoint.parser_checkpoint)
+
+        # Clear detected constructs (will be re-detected from AST)
+        self._detected_constructs = set()
+        self._last_ast_hash = None
 
     def satisfiability(self, constraint: ControlFlowConstraint) -> Satisfiability:
         """Check satisfiability of a control flow constraint.

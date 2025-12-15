@@ -71,6 +71,17 @@ class ASTNodeKind(Enum):
     IMPORT = auto()
     EXPR_STMT = auto()
 
+    # Control flow
+    WHILE = auto()
+    FOR = auto()
+    BREAK = auto()
+    CONTINUE = auto()
+    TRY = auto()
+    EXCEPT = auto()
+    FINALLY = auto()
+    WITH = auto()
+    MATCH = auto()
+
     # Special
     HOLE = auto()
     MODULE = auto()

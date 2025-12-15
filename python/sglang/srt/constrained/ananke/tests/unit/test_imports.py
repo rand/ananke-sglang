@@ -349,6 +349,30 @@ class TestImportConstraint:
 
         assert result.is_bottom()
 
+    def test_invalid_imports(self) -> None:
+        """Test finding invalid imports."""
+        c = ImportConstraint()
+        c = c.with_available(ModuleSpec(name="os", is_valid=True))
+        c = c.with_available(ModuleSpec(name="fake_module", is_valid=False))
+        c = c.with_available(ModuleSpec(name="unknown", is_valid=None))
+
+        invalid = c.invalid_imports()
+        assert len(invalid) == 1
+        assert any(m.name == "fake_module" for m in invalid)
+
+    def test_validated_imports(self) -> None:
+        """Test finding validated imports."""
+        c = ImportConstraint()
+        c = c.with_available(ModuleSpec(name="os", is_valid=True))
+        c = c.with_available(ModuleSpec(name="sys", is_valid=True))
+        c = c.with_available(ModuleSpec(name="fake_module", is_valid=False))
+        c = c.with_available(ModuleSpec(name="unknown", is_valid=None))
+
+        validated = c.validated_imports()
+        assert len(validated) == 2
+        assert any(m.name == "os" for m in validated)
+        assert any(m.name == "sys" for m in validated)
+
 
 # =============================================================================
 # ImportConstraint Semilattice Laws

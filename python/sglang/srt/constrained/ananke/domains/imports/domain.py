@@ -45,6 +45,8 @@ try:
         ImportConstraint,
         ModuleSpec,
     )
+    from .resolvers.base import ImportResolver
+    from .resolvers.python import PythonImportResolver
 except ImportError:
     from core.constraint import Satisfiability
     from core.domain import ConstraintDomain, GenerationContext
@@ -60,6 +62,8 @@ except ImportError:
         ImportConstraint,
         ModuleSpec,
     )
+    from domains.imports.resolvers.base import ImportResolver
+    from domains.imports.resolvers.python import PythonImportResolver
 
 
 class ImportContext(Enum):
@@ -90,6 +94,7 @@ class ImportDomainCheckpoint:
         state_counter: State counter value
         import_context: Current import context state
         partial_module: Partial module name being typed
+        resolved_cache: Cache of resolved module validations
     """
 
     imported_modules: Set[str]
@@ -97,6 +102,7 @@ class ImportDomainCheckpoint:
     state_counter: int
     import_context: ImportContext = ImportContext.NONE
     partial_module: str = ""
+    resolved_cache: Dict[str, bool] = field(default_factory=dict)
 
 
 class ImportDomain(ConstraintDomain[ImportConstraint]):
@@ -114,12 +120,20 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
         >>> # As code is generated, constraint updates with available imports
     """
 
-    def __init__(self, language: str = "python", tokenizer: Optional[Any] = None):
+    def __init__(
+        self,
+        language: str = "python",
+        tokenizer: Optional[Any] = None,
+        resolver: Optional[ImportResolver] = None,
+        validate_imports: bool = True,
+    ):
         """Initialize the import domain.
 
         Args:
             language: Programming language (affects import detection)
             tokenizer: Optional tokenizer for precise masking
+            resolver: Optional import resolver for module validation
+            validate_imports: Whether to validate imports against resolver
         """
         self._language = language
         self._imported_modules: Set[str] = set()
@@ -133,6 +147,19 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
         # Lazy-initialized classifier
         self._tokenizer = tokenizer
         self._classifier: Optional[TokenClassifier] = None
+
+        # Import resolver for validation
+        self._validate_imports = validate_imports
+        if resolver is not None:
+            self._resolver: Optional[ImportResolver] = resolver
+        elif language == "python" and validate_imports:
+            # Default to Python resolver
+            self._resolver = PythonImportResolver()
+        else:
+            self._resolver = None
+
+        # Cache for resolved modules
+        self._resolved_cache: Dict[str, bool] = {}
 
         # Precomputed token sets for common modules (populated on init)
         self._module_name_tokens: Dict[str, Set[int]] = {}
@@ -149,6 +176,62 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
 
         if self._classifier is None:
             self._classifier = get_or_create_classifier(tokenizer, self._language)
+
+    def _is_valid_module(self, module_name: str) -> bool:
+        """Check if a module is valid using the resolver.
+
+        Uses caching to avoid repeated resolution calls.
+
+        Args:
+            module_name: Module name to validate
+
+        Returns:
+            True if module exists or resolver unavailable
+        """
+        # Skip validation if disabled or no resolver
+        if not self._validate_imports or self._resolver is None:
+            return True
+
+        # Check cache
+        if module_name in self._resolved_cache:
+            return self._resolved_cache[module_name]
+
+        # Resolve module
+        result = self._resolver.resolve(module_name)
+        is_valid = result.success
+
+        # Cache result
+        self._resolved_cache[module_name] = is_valid
+        return is_valid
+
+    def _get_module_info(self, module_name: str) -> Optional[Dict[str, Any]]:
+        """Get detailed info about a module from the resolver.
+
+        Args:
+            module_name: Module name to look up
+
+        Returns:
+            Dict with module info or None if not found
+        """
+        if self._resolver is None:
+            return None
+
+        result = self._resolver.resolve(module_name)
+        if not result.success or result.module is None:
+            return None
+
+        return {
+            "name": result.module.name,
+            "version": result.module.version,
+            "path": result.module.path,
+            "is_builtin": result.module.is_builtin,
+            "is_available": result.module.is_available,
+        }
+
+    @property
+    def resolver(self) -> Optional[ImportResolver]:
+        """Return the import resolver."""
+        return self._resolver
 
     @property
     def name(self) -> str:
@@ -480,8 +563,10 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
                 for name in module_name.split(","):
                     name = name.strip()
                     if name:
+                        # Validate module if resolver available
+                        is_valid = self._is_valid_module(name)
                         self._imported_modules.add(name)
-                        spec = ModuleSpec(name=name, alias=alias)
+                        spec = ModuleSpec(name=name, alias=alias, is_valid=is_valid)
                         constraint = constraint.with_available(spec)
 
                 # Clear buffer after processing
@@ -497,8 +582,10 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
                     parts = import_part.split(" import ")
                     module_name = parts[0][5:].strip()  # Remove "from "
 
+                    # Validate module if resolver available
+                    is_valid = self._is_valid_module(module_name)
                     self._imported_modules.add(module_name)
-                    spec = ModuleSpec(name=module_name)
+                    spec = ModuleSpec(name=module_name, is_valid=is_valid)
                     constraint = constraint.with_available(spec)
 
                 # Clear buffer
@@ -540,8 +627,10 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
                         parts = import_part.split(quote)
                         if len(parts) >= 2:
                             module_name = parts[1]
+                            # Validate module if resolver available
+                            is_valid = self._is_valid_module(module_name)
                             self._imported_modules.add(module_name)
-                            spec = ModuleSpec(name=module_name)
+                            spec = ModuleSpec(name=module_name, is_valid=is_valid)
                             constraint = constraint.with_available(spec)
                             break
 
@@ -564,6 +653,7 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
             state_counter=self._state_counter,
             import_context=self._import_context,
             partial_module=self._partial_module,
+            resolved_cache=self._resolved_cache.copy(),
         )
 
     def restore(self, checkpoint: Any) -> None:
@@ -581,6 +671,7 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
         self._state_counter = checkpoint.state_counter
         self._import_context = checkpoint.import_context
         self._partial_module = checkpoint.partial_module
+        self._resolved_cache = checkpoint.resolved_cache.copy()
 
     def satisfiability(self, constraint: ImportConstraint) -> Satisfiability:
         """Check satisfiability of an import constraint.

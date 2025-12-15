@@ -43,11 +43,13 @@ class ModuleSpec:
         name: Module name (e.g., "numpy", "typing")
         version: Optional version constraint (e.g., ">=1.0.0")
         alias: Optional import alias (e.g., "np" for numpy)
+        is_valid: Whether the module was validated as existing (None if not checked)
     """
 
     name: str
     version: Optional[str] = None
     alias: Optional[str] = None
+    is_valid: Optional[bool] = None
 
     def __repr__(self) -> str:
         parts = [self.name]
@@ -266,6 +268,22 @@ class ImportConstraint(Constraint["ImportConstraint"]):
         """
         available_names = {m.name for m in self.available}
         return frozenset(m for m in self.required if m.name not in available_names)
+
+    def invalid_imports(self) -> FrozenSet[ModuleSpec]:
+        """Get available modules that were validated as invalid.
+
+        Returns:
+            Set of available modules where is_valid is False
+        """
+        return frozenset(m for m in self.available if m.is_valid is False)
+
+    def validated_imports(self) -> FrozenSet[ModuleSpec]:
+        """Get available modules that were validated as valid.
+
+        Returns:
+            Set of available modules where is_valid is True
+        """
+        return frozenset(m for m in self.available if m.is_valid is True)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ImportConstraint):
