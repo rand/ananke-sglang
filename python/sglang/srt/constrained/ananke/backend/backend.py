@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from sglang.srt.constrained.base_grammar_backend import (
     INVALID_GRAMMAR_OBJ,
@@ -43,6 +43,9 @@ from sglang.srt.constrained.base_grammar_backend import (
     BaseGrammarObject,
     register_grammar_backend,
 )
+
+if TYPE_CHECKING:
+    from ..spec.constraint_spec import ConstraintSpec
 
 # Support both relative imports (when used as subpackage) and absolute imports (standalone testing)
 try:
@@ -262,15 +265,22 @@ class AnankeBackend(BaseGrammarBackend):
     def _create_ananke_grammar(
         self,
         syntax_grammar: Optional[BaseGrammarObject],
+        constraint_spec: Optional["ConstraintSpec"] = None,
     ) -> AnankeGrammar:
         """Create an AnankeGrammar instance with the given syntax grammar.
 
         Args:
             syntax_grammar: Underlying syntax grammar (llguidance)
+            constraint_spec: Optional rich constraint specification
 
         Returns:
             Configured AnankeGrammar instance
         """
+        # Determine effective language
+        language = self.language
+        if constraint_spec is not None and constraint_spec.language:
+            language = constraint_spec.language
+
         return AnankeGrammar(
             syntax_grammar=syntax_grammar,
             domains=self.domains,
@@ -278,9 +288,356 @@ class AnankeBackend(BaseGrammarBackend):
             vocab_size=self.vocab_size,
             device="cuda",
             tokenizer=self.tokenizer,
-            language=self.language,
+            language=language,
             max_rollback_tokens=self.max_rollback_tokens,
+            constraint_spec=constraint_spec,
         )
+
+    def dispatch_with_spec(
+        self,
+        spec: "ConstraintSpec",
+    ) -> Optional[AnankeGrammar]:
+        """Create AnankeGrammar with full constraint specification.
+
+        This is the primary dispatch method for rich constraint specs,
+        enabling:
+        - Per-request language configuration
+        - Type environment context
+        - Import context
+        - Control flow context
+        - Semantic constraints
+
+        The method:
+        1. Resolves the effective language from spec and backend defaults
+        2. Creates syntax grammar from the core constraint
+        3. Creates domains with context seeded from the spec
+        4. Returns configured AnankeGrammar
+
+        Args:
+            spec: Rich constraint specification
+
+        Returns:
+            AnankeGrammar instance or INVALID_GRAMMAR_OBJ on error
+        """
+        # 1. Resolve effective language
+        effective_language = self._resolve_language(spec)
+
+        # 2. Create syntax grammar from core constraint
+        syntax_grammar = self._create_syntax_grammar_from_spec(spec)
+        if syntax_grammar is INVALID_GRAMMAR_OBJ:
+            return INVALID_GRAMMAR_OBJ
+
+        # 3. Create domains with context from spec
+        domains = self._create_domains_with_spec(spec, effective_language)
+
+        # 4. Create and return grammar with spec
+        return AnankeGrammar(
+            syntax_grammar=syntax_grammar,
+            domains=domains,
+            constraint=UNIFIED_TOP,
+            vocab_size=self.vocab_size,
+            device="cuda",
+            tokenizer=self.tokenizer,
+            language=effective_language,
+            max_rollback_tokens=self.max_rollback_tokens,
+            constraint_spec=spec,
+        )
+
+    def _resolve_language(self, spec: "ConstraintSpec") -> str:
+        """Resolve effective language from spec and backend defaults.
+
+        Args:
+            spec: Constraint specification
+
+        Returns:
+            Effective language string
+        """
+        # Import LanguageDetection enum
+        try:
+            from ..spec.constraint_spec import LanguageDetection
+        except ImportError:
+            from spec.constraint_spec import LanguageDetection
+
+        if spec.language:
+            return spec.language
+        if spec.language_detection == LanguageDetection.AUTO:
+            # Will be determined during generation via tree-sitter
+            # Start with backend default
+            return self.language
+        return self.language
+
+    def _create_syntax_grammar_from_spec(
+        self,
+        spec: "ConstraintSpec",
+    ) -> Optional[BaseGrammarObject]:
+        """Create syntax grammar from constraint spec.
+
+        Args:
+            spec: Constraint specification
+
+        Returns:
+            Syntax grammar or INVALID_GRAMMAR_OBJ on error
+        """
+        if self.syntax_backend is None:
+            return None
+
+        if spec.json_schema is not None:
+            return self.syntax_backend.dispatch_json(spec.json_schema)
+        elif spec.regex is not None:
+            return self.syntax_backend.dispatch_regex(spec.regex)
+        elif spec.ebnf is not None:
+            return self.syntax_backend.dispatch_ebnf(spec.ebnf)
+        elif spec.structural_tag is not None:
+            return self.syntax_backend.dispatch_structural_tag(spec.structural_tag)
+
+        return None
+
+    def _create_domains_with_spec(
+        self,
+        spec: "ConstraintSpec",
+        language: str,
+    ) -> Dict[str, ConstraintDomain]:
+        """Create domains initialized with context from spec.
+
+        Args:
+            spec: Constraint specification
+            language: Effective language
+
+        Returns:
+            Dictionary of initialized domains
+        """
+        # Compute which domains to enable
+        enabled = self._compute_enabled_domains(spec)
+        domains: Dict[str, ConstraintDomain] = {}
+
+        # Create each enabled domain with context
+        if "types" in enabled:
+            domains["types"] = self._create_type_domain_with_spec(spec, language)
+
+        if "imports" in enabled:
+            domains["imports"] = self._create_import_domain_with_spec(spec, language)
+
+        if "controlflow" in enabled:
+            domains["controlflow"] = self._create_cf_domain_with_spec(spec, language)
+
+        if "semantics" in enabled:
+            domains["semantics"] = self._create_semantic_domain_with_spec(spec, language)
+
+        return domains
+
+    def _compute_enabled_domains(self, spec: "ConstraintSpec") -> Set[str]:
+        """Compute which domains to enable based on spec and backend config.
+
+        Args:
+            spec: Constraint specification
+
+        Returns:
+            Set of enabled domain names
+        """
+        # Start with backend defaults
+        enabled = set(self.enabled_domains)
+
+        # Apply spec overrides
+        if spec.enabled_domains is not None:
+            enabled = spec.enabled_domains
+        if spec.disabled_domains is not None:
+            enabled = enabled - spec.disabled_domains
+
+        return enabled
+
+    def _create_type_domain_with_spec(
+        self,
+        spec: "ConstraintSpec",
+        language: str,
+    ) -> TypeDomain:
+        """Create TypeDomain seeded with type context from spec.
+
+        Args:
+            spec: Constraint specification
+            language: Effective language
+
+        Returns:
+            Configured TypeDomain instance
+        """
+        domain = TypeDomain(language=language)
+
+        # Use inject_context if available (preferred path)
+        if hasattr(domain, "inject_context"):
+            domain.inject_context(spec)
+            return domain
+
+        # Fallback: seed manually using individual methods
+        # Seed type bindings (parse type expressions)
+        for binding in spec.type_bindings:
+            if hasattr(domain, "_parse_type_expr"):
+                parsed_type = domain._parse_type_expr(binding.type_expr)
+                domain.bind_variable(binding.name, parsed_type)
+
+        # Seed function signatures
+        for sig in spec.function_signatures:
+            if hasattr(domain, "register_function") and hasattr(domain, "_parse_type_expr"):
+                params = [
+                    (p.name, domain._parse_type_expr(p.type_expr))
+                    for p in sig.params
+                ]
+                ret_type = domain._parse_type_expr(sig.return_type)
+                domain.register_function(
+                    name=sig.name,
+                    params=params,
+                    return_type=ret_type,
+                    type_params=list(sig.type_params) if sig.type_params else None,
+                    is_async=sig.is_async,
+                    is_generator=sig.is_generator,
+                )
+
+        # Seed class definitions
+        for cls_def in spec.class_definitions:
+            if hasattr(domain, "register_class"):
+                domain.register_class(
+                    name=cls_def.name,
+                    bases=list(cls_def.bases) if cls_def.bases else None,
+                    type_params=list(cls_def.type_params) if cls_def.type_params else None,
+                )
+
+        # Set expected type
+        if spec.expected_type and hasattr(domain, "_parse_type_expr"):
+            parsed_type = domain._parse_type_expr(spec.expected_type)
+            domain.set_expected_type(parsed_type)
+
+        # Apply type aliases
+        for alias, target in spec.type_aliases.items():
+            if hasattr(domain, "_parse_type_expr") and hasattr(domain, "add_type_alias"):
+                parsed_type = domain._parse_type_expr(target)
+                domain.add_type_alias(alias, parsed_type)
+
+        return domain
+
+    def _create_import_domain_with_spec(
+        self,
+        spec: "ConstraintSpec",
+        language: str,
+    ) -> ImportDomain:
+        """Create ImportDomain seeded with import context from spec.
+
+        Args:
+            spec: Constraint specification
+            language: Effective language
+
+        Returns:
+            Configured ImportDomain instance
+        """
+        domain = ImportDomain(language=language)
+
+        # Use inject_context if available (preferred path)
+        if hasattr(domain, "inject_context"):
+            domain.inject_context(spec)
+            return domain
+
+        # Fallback: seed manually using individual methods
+        # Seed imports
+        for imp in spec.imports:
+            if hasattr(domain, "add_import"):
+                domain.add_import(
+                    module=imp.module,
+                    name=imp.name,
+                    alias=imp.alias,
+                    is_wildcard=imp.is_wildcard,
+                )
+
+        # Set available modules
+        if spec.available_modules and hasattr(domain, "set_available_modules"):
+            domain.set_available_modules(spec.available_modules)
+
+        # Note: set_forbidden_imports returns a constraint, not modifies domain
+        # The forbidden imports are handled via constraint creation
+        # if spec.forbidden_imports and hasattr(domain, "set_forbidden_imports"):
+        #     domain.set_forbidden_imports(spec.forbidden_imports)
+
+        return domain
+
+    def _create_cf_domain_with_spec(
+        self,
+        spec: "ConstraintSpec",
+        language: str,
+    ) -> ControlFlowDomain:
+        """Create ControlFlowDomain seeded with control flow context from spec.
+
+        Args:
+            spec: Constraint specification
+            language: Effective language
+
+        Returns:
+            Configured ControlFlowDomain instance
+        """
+        domain = ControlFlowDomain(language=language)
+
+        # Use inject_context if available (preferred path)
+        if hasattr(domain, "inject_context"):
+            domain.inject_context(spec)
+            return domain
+
+        # Fallback: seed manually using individual methods
+        cf_ctx = spec.control_flow
+        if cf_ctx is None:
+            return domain
+
+        # Set function context if provided
+        if cf_ctx.function_name and hasattr(domain, "set_function_context"):
+            domain.set_function_context(
+                function_name=cf_ctx.function_name,
+                expected_return_type=cf_ctx.expected_return_type,
+                is_async=cf_ctx.in_async_context,
+                is_generator=cf_ctx.in_generator,
+            )
+
+        # Set loop context if in loop
+        if cf_ctx.loop_depth > 0 and hasattr(domain, "set_loop_context"):
+            domain.set_loop_context(
+                loop_depth=cf_ctx.loop_depth,
+                loop_variables=list(cf_ctx.loop_variables) if cf_ctx.loop_variables else None,
+            )
+
+        # Set try context if in try block
+        if cf_ctx.in_try_block and hasattr(domain, "set_try_context"):
+            domain.set_try_context(
+                in_try_block=True,
+                exception_types=list(cf_ctx.exception_types) if cf_ctx.exception_types else None,
+            )
+
+        return domain
+
+    def _create_semantic_domain_with_spec(
+        self,
+        spec: "ConstraintSpec",
+        language: str,
+    ) -> SemanticDomain:
+        """Create SemanticDomain seeded with semantic constraints from spec.
+
+        Args:
+            spec: Constraint specification
+            language: Effective language
+
+        Returns:
+            Configured SemanticDomain instance
+        """
+        domain = SemanticDomain(language=language)
+
+        # Use inject_context if available (preferred path)
+        if hasattr(domain, "inject_context"):
+            domain.inject_context(spec)
+            return domain
+
+        # Fallback: seed manually using individual methods
+        for constraint in spec.semantic_constraints:
+            if hasattr(domain, "add_semantic_constraint"):
+                domain.add_semantic_constraint(
+                    kind=constraint.kind,
+                    expression=constraint.expression,
+                    scope=constraint.scope,
+                    variables=list(constraint.variables) if constraint.variables else None,
+                )
+
+        return domain
 
 
 def create_ananke_backend(
@@ -305,6 +662,21 @@ def create_ananke_backend(
     """
     eos_list = list(eos_token_ids) if eos_token_ids else None
 
+    # Parse enabled_domains from comma-separated string to set
+    enabled_domains_str = getattr(server_args, "ananke_enabled_domains", None)
+    enabled_domains: Optional[Set[str]] = None
+    if enabled_domains_str:
+        enabled_domains = {d.strip() for d in enabled_domains_str.split(",")}
+        # Validate domain names
+        valid_domains = {"syntax", "types", "imports", "controlflow", "semantics"}
+        invalid = enabled_domains - valid_domains
+        if invalid:
+            logger.warning(
+                f"Unknown Ananke domains ignored: {invalid}. "
+                f"Valid domains: {valid_domains}"
+            )
+            enabled_domains = enabled_domains & valid_domains
+
     return AnankeBackend(
         tokenizer=tokenizer,
         vocab_size=vocab_size,
@@ -316,6 +688,7 @@ def create_ananke_backend(
             server_args, "constrained_json_whitespace_pattern", None
         ),
         language=getattr(server_args, "ananke_language", "python"),
+        enabled_domains=enabled_domains,
         max_rollback_tokens=getattr(server_args, "ananke_max_rollback_tokens", 200),
     )
 

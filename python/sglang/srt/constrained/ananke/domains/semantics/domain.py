@@ -1175,3 +1175,173 @@ class SemanticDomain(ConstraintDomain[SemanticConstraint]):
         self._variable_bounds.clear()
         self._assignment_context = None
         self._expression_state = ExpressionState()
+
+    def add_semantic_constraint(
+        self,
+        kind: str,
+        expression: str,
+        scope: Optional[str] = None,
+        variables: Optional[List[str]] = None,
+    ) -> SemanticConstraint:
+        """Add a semantic constraint from external specification.
+
+        Args:
+            kind: Constraint kind ("precondition", "postcondition", "invariant", "assertion", "assume")
+            expression: Boolean expression in target language
+            scope: Where this constraint applies
+            variables: Free variables in expression
+
+        Returns:
+            Updated SemanticConstraint
+        """
+        constraint = self.create_constraint()
+
+        if kind == "precondition":
+            constraint = constraint.add_precondition(expression, scope)
+        elif kind == "postcondition":
+            constraint = constraint.add_postcondition(expression, scope)
+        elif kind == "invariant":
+            constraint = constraint.add_invariant(expression, scope)
+        elif kind == "assertion":
+            constraint = constraint.add_assertion(expression, scope)
+        elif kind == "assume" or kind == "assumption":
+            constraint = constraint.add_assumption(expression, scope)
+        else:
+            # Default to assertion
+            constraint = constraint.add_assertion(expression, scope)
+
+        return constraint
+
+    def set_bounds(
+        self,
+        variable: str,
+        lower: Optional[float] = None,
+        upper: Optional[float] = None,
+        is_float: bool = False,
+    ) -> None:
+        """Set bounds for a variable directly.
+
+        This is useful when bounds are known from external context
+        (e.g., from type annotations or explicit constraints).
+
+        Args:
+            variable: Variable name
+            lower: Lower bound (inclusive)
+            upper: Upper bound (inclusive)
+            is_float: Whether the variable is a float
+        """
+        self._variable_bounds[variable] = VariableBounds(
+            lower=lower,
+            upper=upper,
+            is_float=is_float,
+            confidence=BoundsConfidence.HIGH,
+            source="external",
+        )
+
+    def inject_context(self, spec: Any) -> None:
+        """Inject context from a ConstraintSpec.
+
+        Called when a cached grammar object needs fresh context.
+        This re-seeds the semantic state with data from the spec.
+
+        Args:
+            spec: A ConstraintSpec object (typed as Any to avoid circular import)
+        """
+        # Import locally to avoid circular dependency
+        # Try relative import first, fall back to absolute
+        try:
+            from ...spec.constraint_spec import ConstraintSpec
+        except ImportError:
+            try:
+                from spec.constraint_spec import ConstraintSpec
+            except ImportError:
+                # If we can't import, check by class name
+                if spec.__class__.__name__ != "ConstraintSpec":
+                    return
+                ConstraintSpec = spec.__class__
+
+        if not isinstance(spec, ConstraintSpec):
+            return
+
+        # Reset state
+        self.reset()
+
+        # Add semantic constraints from spec
+        for sc in spec.semantic_constraints:
+            # Create formula from constraint
+            formula_kind = self._map_constraint_kind(sc.kind)
+            formula = SMTFormula(
+                expression=sc.expression,
+                kind=formula_kind,
+                name=sc.scope,
+            )
+            self._accumulated_formulas.append(formula)
+
+            # Extract bounds from the formula
+            bounds = self._extract_bounds_from_formula(
+                sc.expression,
+                self._formula_kind_to_confidence(formula_kind),
+            )
+            if bounds:
+                var_name, bound_info = bounds
+                if var_name not in self._variable_bounds:
+                    self._variable_bounds[var_name] = bound_info
+                else:
+                    # Merge bounds
+                    existing = self._variable_bounds[var_name]
+                    if bound_info.lower is not None:
+                        if existing.lower is None or bound_info.lower > existing.lower:
+                            existing.lower = bound_info.lower
+                    if bound_info.upper is not None:
+                        if existing.upper is None or bound_info.upper < existing.upper:
+                            existing.upper = bound_info.upper
+
+    def _map_constraint_kind(self, kind_str: str) -> FormulaKind:
+        """Map constraint kind string to FormulaKind enum.
+
+        Args:
+            kind_str: Kind string from ConstraintSpec
+
+        Returns:
+            Corresponding FormulaKind
+        """
+        kind_map = {
+            "precondition": FormulaKind.PRECONDITION,
+            "postcondition": FormulaKind.POSTCONDITION,
+            "invariant": FormulaKind.INVARIANT,
+            "assertion": FormulaKind.ASSERTION,
+            "assume": FormulaKind.ASSUMPTION,
+            "assumption": FormulaKind.ASSUMPTION,
+        }
+        return kind_map.get(kind_str.lower(), FormulaKind.ASSERTION)
+
+    def seed_constraints(
+        self,
+        constraints: List[Tuple[str, str, Optional[str], List[str]]],
+    ) -> None:
+        """Seed semantic constraints from a list of tuples.
+
+        This is the primary method for initializing semantic context from
+        a ConstraintSpec's semantic_constraints.
+
+        Args:
+            constraints: List of (kind, expression, scope, variables) tuples
+                Note: variables parameter is accepted but not stored in SMTFormula
+        """
+        for kind, expression, scope, variables in constraints:
+            formula_kind = self._map_constraint_kind(kind)
+            formula = SMTFormula(
+                expression=expression,
+                kind=formula_kind,
+                name=scope,
+            )
+            self._accumulated_formulas.append(formula)
+
+            # Extract and store bounds
+            bounds = self._extract_bounds_from_formula(
+                expression,
+                self._formula_kind_to_confidence(formula_kind),
+            )
+            if bounds:
+                var_name, bound_info = bounds
+                self._variable_bounds[var_name] = bound_info

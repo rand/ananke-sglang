@@ -47,6 +47,7 @@ try:
         TYPE_TOP,
         TypeConstraint,
         Type,
+        TypeVar,
         ANY,
         NEVER,
         INT,
@@ -80,6 +81,7 @@ except ImportError:
         TYPE_TOP,
         TypeConstraint,
         Type,
+        TypeVar,
         ANY,
         NEVER,
         INT,
@@ -1027,3 +1029,191 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
     def pop_scope(self) -> None:
         """Exit the current scope."""
         self._environment = self._environment.pop_scope()
+
+    def register_function(
+        self,
+        name: str,
+        params: List[Tuple[str, Type]],
+        return_type: Type,
+        type_params: Optional[List[str]] = None,
+        is_async: bool = False,
+        is_generator: bool = False,
+    ) -> None:
+        """Register a function signature in the type environment.
+
+        Args:
+            name: Function name
+            params: List of (param_name, param_type) tuples
+            return_type: Return type of the function
+            type_params: Generic type parameters
+            is_async: Whether the function is async
+            is_generator: Whether the function is a generator
+        """
+        # Create function type (params, returns)
+        param_types = tuple(ty for _, ty in params)
+        param_names = tuple(pname for pname, _ in params)
+        func_type = FunctionType(params=param_types, returns=return_type, param_names=param_names)
+
+        # Bind function name to its type
+        self._environment = self._environment.bind(name, func_type)
+
+    def register_class(
+        self,
+        name: str,
+        bases: Optional[List[str]] = None,
+        type_params: Optional[List[str]] = None,
+        methods: Optional[Dict[str, Tuple[List[Tuple[str, Type]], Type]]] = None,
+        class_vars: Optional[Dict[str, Type]] = None,
+        instance_vars: Optional[Dict[str, Type]] = None,
+    ) -> None:
+        """Register a class definition in the type environment.
+
+        Args:
+            name: Class name
+            bases: Base class names (stored as metadata, not in ClassType)
+            type_params: Generic type parameters (converted to type args)
+            methods: Dict of method_name -> (params, return_type)
+            class_vars: Dict of class variable name -> type
+            instance_vars: Dict of instance variable name -> type
+        """
+        # Create class type (name, type_args)
+        # Note: ClassType only stores name and type_args, not bases
+        type_args = tuple(TypeVar(tp) for tp in (type_params or []))
+        class_type = ClassType(name=name, type_args=type_args)
+
+        # Bind class name to its type
+        self._environment = self._environment.bind(name, class_type)
+
+        # Register methods as attributes of the class
+        if methods:
+            for method_name, (params, ret_type) in methods.items():
+                param_types = tuple(ty for _, ty in params)
+                param_names = tuple(pname for pname, _ in params)
+                method_type = FunctionType(params=param_types, returns=ret_type, param_names=param_names)
+                # Methods are stored in a separate namespace (class.method_name)
+                self._environment = self._environment.bind(f"{name}.{method_name}", method_type)
+
+    def add_type_alias(self, alias: str, target_type: Type) -> None:
+        """Add a type alias to the environment.
+
+        Args:
+            alias: The alias name
+            target_type: The type the alias refers to
+        """
+        self._environment = self._environment.bind(alias, target_type)
+
+    def seed_from_bindings(
+        self,
+        bindings: List[Tuple[str, Type, Optional[str]]],
+    ) -> None:
+        """Seed the type environment from a list of bindings.
+
+        This is the primary method for initializing type context from
+        a ConstraintSpec's type_bindings.
+
+        Args:
+            bindings: List of (name, type, scope) tuples
+        """
+        for name, ty, scope in bindings:
+            self._environment = self._environment.bind(name, ty)
+
+    def inject_context(self, spec: Any) -> None:
+        """Inject context from a ConstraintSpec.
+
+        Called when a cached grammar object needs fresh context.
+        This re-seeds the type environment with bindings from the spec.
+
+        Args:
+            spec: A ConstraintSpec object (typed as Any to avoid circular import)
+        """
+        # Import locally to avoid circular dependency
+        # Try relative import first, fall back to absolute
+        try:
+            from ...spec.constraint_spec import ConstraintSpec
+        except ImportError:
+            try:
+                from spec.constraint_spec import ConstraintSpec
+            except ImportError:
+                # If we can't import, check by class name
+                if spec.__class__.__name__ != "ConstraintSpec":
+                    return
+                ConstraintSpec = spec.__class__
+
+        if not isinstance(spec, ConstraintSpec):
+            return
+
+        # Clear and rebuild environment
+        self._environment = EMPTY_ENVIRONMENT
+
+        # Add type bindings
+        for binding in spec.type_bindings:
+            # Parse type expression (simplified - real implementation would
+            # use a proper type parser for the language)
+            ty = self._parse_type_expr(binding.type_expr)
+            self._environment = self._environment.bind(binding.name, ty)
+
+        # Set expected type if provided
+        if spec.expected_type:
+            self._expected_type = self._parse_type_expr(spec.expected_type)
+
+        # Add type aliases
+        for alias, target in spec.type_aliases.items():
+            ty = self._parse_type_expr(target)
+            self._environment = self._environment.bind(alias, ty)
+
+    def _parse_type_expr(self, type_expr: str) -> Type:
+        """Parse a type expression string into a Type.
+
+        This is a simplified parser. A full implementation would handle
+        the complete type syntax for each supported language.
+
+        Args:
+            type_expr: Type expression string (e.g., "int", "List[str]")
+
+        Returns:
+            Parsed Type object
+        """
+        type_expr = type_expr.strip()
+
+        # Handle primitive types
+        primitive_map = {
+            "int": INT,
+            "str": STR,
+            "bool": BOOL,
+            "float": FLOAT,
+            "None": NONE,
+            "Any": ANY,
+            "Never": NEVER,
+        }
+        if type_expr in primitive_map:
+            return primitive_map[type_expr]
+
+        # Handle List[T]
+        if type_expr.startswith("List[") and type_expr.endswith("]"):
+            inner = type_expr[5:-1]
+            return ListType(self._parse_type_expr(inner))
+
+        # Handle Dict[K, V]
+        if type_expr.startswith("Dict[") and type_expr.endswith("]"):
+            inner = type_expr[5:-1]
+            # Simple split on comma (doesn't handle nested generics properly)
+            parts = inner.split(",", 1)
+            if len(parts) == 2:
+                key_type = self._parse_type_expr(parts[0].strip())
+                val_type = self._parse_type_expr(parts[1].strip())
+                return DictType(key_type, val_type)
+
+        # Handle Tuple[T, ...]
+        if type_expr.startswith("Tuple[") and type_expr.endswith("]"):
+            inner = type_expr[6:-1]
+            parts = [p.strip() for p in inner.split(",")]
+            element_types = tuple(self._parse_type_expr(p) for p in parts)
+            return TupleType(element_types)
+
+        # Handle Optional[T] as Union[T, None]
+        if type_expr.startswith("Optional[") and type_expr.endswith("]"):
+            inner = type_expr[9:-1]
+            return self._parse_type_expr(inner)  # Simplified - ignores None
+
+        # Default to class type for unknown types
+        return ClassType(name=type_expr)

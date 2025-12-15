@@ -644,3 +644,105 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
             True if imported
         """
         return module in self._imported_modules
+
+    def add_import(
+        self,
+        module: str,
+        name: Optional[str] = None,
+        alias: Optional[str] = None,
+        is_wildcard: bool = False,
+    ) -> None:
+        """Add an import to the available imports.
+
+        Args:
+            module: Module name (e.g., "numpy", "typing")
+            name: Specific name imported (e.g., "List" from "typing")
+            alias: Alias for the import (e.g., "np" for "numpy")
+            is_wildcard: Whether this is a wildcard import
+        """
+        self._imported_modules.add(module)
+        if name:
+            # Track specific imports like "from typing import List"
+            self._imported_modules.add(f"{module}.{name}")
+
+    def set_available_modules(self, modules: Set[str]) -> None:
+        """Set the complete set of available modules.
+
+        This replaces any existing available modules.
+
+        Args:
+            modules: Set of module names that are available
+        """
+        self._imported_modules = modules.copy()
+
+    def set_forbidden_imports(self, forbidden: Set[str]) -> ImportConstraint:
+        """Create a constraint with forbidden imports.
+
+        Args:
+            forbidden: Set of module names that are forbidden
+
+        Returns:
+            ImportConstraint with the forbidden modules
+        """
+        return self.create_constraint(forbidden=list(forbidden))
+
+    def inject_context(self, spec: Any) -> None:
+        """Inject context from a ConstraintSpec.
+
+        Called when a cached grammar object needs fresh context.
+        This re-seeds the import state with data from the spec.
+
+        Args:
+            spec: A ConstraintSpec object (typed as Any to avoid circular import)
+        """
+        # Import locally to avoid circular dependency
+        # Try relative import first, fall back to absolute
+        try:
+            from ...spec.constraint_spec import ConstraintSpec
+        except ImportError:
+            try:
+                from spec.constraint_spec import ConstraintSpec
+            except ImportError:
+                # If we can't import, check by class name
+                if spec.__class__.__name__ != "ConstraintSpec":
+                    return
+                ConstraintSpec = spec.__class__
+
+        if not isinstance(spec, ConstraintSpec):
+            return
+
+        # Clear existing imports
+        self._imported_modules.clear()
+
+        # Add imports from spec
+        for import_binding in spec.imports:
+            self.add_import(
+                module=import_binding.module,
+                name=import_binding.name,
+                alias=import_binding.alias,
+                is_wildcard=import_binding.is_wildcard,
+            )
+
+        # Add available modules
+        for module in spec.available_modules:
+            self._imported_modules.add(module)
+
+    def seed_imports(
+        self,
+        imports: List[Tuple[str, Optional[str], Optional[str], bool]],
+    ) -> None:
+        """Seed the import state from a list of import tuples.
+
+        This is the primary method for initializing import context from
+        a ConstraintSpec's imports.
+
+        Args:
+            imports: List of (module, name, alias, is_wildcard) tuples
+        """
+        for module, name, alias, is_wildcard in imports:
+            self.add_import(
+                module=module,
+                name=name,
+                alias=alias,
+                is_wildcard=is_wildcard,
+            )

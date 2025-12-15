@@ -751,3 +751,180 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
             must_not_reach=not_reach_points,
             termination=termination,
         )
+
+    def set_function_context(
+        self,
+        function_name: str,
+        expected_return_type: Optional[str] = None,
+        is_async: bool = False,
+        is_generator: bool = False,
+    ) -> None:
+        """Set the function context for control flow tracking.
+
+        Args:
+            function_name: Name of the current function
+            expected_return_type: Expected return type expression
+            is_async: Whether the function is async
+            is_generator: Whether the function is a generator
+        """
+        # Create entry block for function
+        entry_id = self._new_block_id("func_entry")
+        entry = BasicBlock(id=entry_id, kind="function_entry", is_entry=True)
+        self._cfg.add_block(entry)
+        self._current_block_id = entry_id
+
+        # Push function context
+        self._control_stack.append({
+            "type": "function",
+            "name": function_name,
+            "entry": entry_id,
+            "is_async": is_async,
+            "is_generator": is_generator,
+            "expected_return_type": expected_return_type,
+        })
+
+    def set_loop_context(
+        self,
+        loop_depth: int = 0,
+        loop_variables: Optional[List[str]] = None,
+    ) -> None:
+        """Set the loop context for control flow tracking.
+
+        Args:
+            loop_depth: Current nesting depth of loops
+            loop_variables: Variables used as loop iterators
+        """
+        # Create nested loop contexts based on depth
+        for i in range(loop_depth):
+            header_id = self._new_block_id(f"loop_header_{i}")
+            body_id = self._new_block_id(f"loop_body_{i}")
+
+            header = BasicBlock(id=header_id, kind="loop_header", is_loop_header=True)
+            body = BasicBlock(id=body_id, kind="loop_body")
+
+            self._cfg.add_block(header)
+            self._cfg.add_block(body)
+
+            if self._current_block_id:
+                self._cfg.add_edge(CFGEdge(
+                    source=self._current_block_id,
+                    target=header_id,
+                    kind=EdgeKind.SEQUENTIAL,
+                ))
+
+            self._cfg.add_edge(CFGEdge(
+                source=header_id,
+                target=body_id,
+                kind=EdgeKind.CONDITIONAL_TRUE,
+            ))
+
+            self._control_stack.append({
+                "type": "loop",
+                "loop_type": "for",
+                "header": header_id,
+                "body": body_id,
+                "exit": None,
+            })
+
+            self._current_block_id = body_id
+
+    def set_try_context(self, in_try_block: bool = False, exception_types: Optional[List[str]] = None) -> None:
+        """Set the try/except context for control flow tracking.
+
+        Args:
+            in_try_block: Whether we're inside a try block
+            exception_types: Types of exceptions being caught
+        """
+        if in_try_block:
+            try_id = self._new_block_id("try")
+            try_block = BasicBlock(id=try_id, kind="try_block")
+            self._cfg.add_block(try_block)
+
+            if self._current_block_id:
+                self._cfg.add_edge(CFGEdge(
+                    source=self._current_block_id,
+                    target=try_id,
+                    kind=EdgeKind.SEQUENTIAL,
+                ))
+
+            self._control_stack.append({
+                "type": "try",
+                "try_block": try_id,
+                "handlers": [],
+                "exception_types": exception_types or [],
+            })
+
+            self._current_block_id = try_id
+
+    def inject_context(self, spec: Any) -> None:
+        """Inject context from a ConstraintSpec.
+
+        Called when a cached grammar object needs fresh context.
+        This re-seeds the control flow state with data from the spec.
+
+        Args:
+            spec: A ConstraintSpec object (typed as Any to avoid circular import)
+        """
+        # Import locally to avoid circular dependency
+        # Try relative import first, fall back to absolute
+        try:
+            from ...spec.constraint_spec import ConstraintSpec
+        except ImportError:
+            try:
+                from spec.constraint_spec import ConstraintSpec
+            except ImportError:
+                # If we can't import, check by class name
+                if spec.__class__.__name__ != "ConstraintSpec":
+                    return
+                ConstraintSpec = spec.__class__
+
+        if not isinstance(spec, ConstraintSpec):
+            return
+
+        # Clear existing state
+        self._cfg = CFGSketch()
+        self._current_block_id = None
+        self._block_counter = 0
+        self._control_stack.clear()
+        self._token_buffer = ""
+
+        # Apply control flow context if provided
+        cf_ctx = spec.control_flow
+        if cf_ctx is None:
+            return
+
+        # Set function context if provided
+        if cf_ctx.function_name:
+            self.set_function_context(
+                function_name=cf_ctx.function_name,
+                expected_return_type=cf_ctx.expected_return_type,
+                is_async=cf_ctx.in_async_context,
+                is_generator=cf_ctx.in_generator,
+            )
+
+        # Set loop context if in loop
+        if cf_ctx.loop_depth > 0:
+            self.set_loop_context(
+                loop_depth=cf_ctx.loop_depth,
+                loop_variables=list(cf_ctx.loop_variables),
+            )
+
+        # Set try context if in try block
+        if cf_ctx.in_try_block:
+            self.set_try_context(
+                in_try_block=True,
+                exception_types=list(cf_ctx.exception_types),
+            )
+
+    def get_reachability_status(self) -> bool:
+        """Get whether current position is reachable.
+
+        Returns:
+            True if current code position is reachable
+        """
+        if self._current_block_id is None:
+            return False
+
+        analyzer = ReachabilityAnalyzer(self._cfg)
+        result = analyzer.analyze()
+        return analyzer.is_reachable(self._current_block_id)

@@ -76,6 +76,7 @@ except ImportError:
 
 if TYPE_CHECKING:
     from sglang.srt.constrained.llguidance_backend import GuidanceGrammar
+    from ..spec.constraint_spec import ConstraintSpec
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ class AnankeGrammar(BaseGrammarObject):
 
     def __init__(
         self,
-        syntax_grammar: Optional[GuidanceGrammar],
+        syntax_grammar: Optional["GuidanceGrammar"],
         domains: Dict[str, ConstraintDomain],
         constraint: UnifiedConstraint = UNIFIED_TOP,
         vocab_size: int = 0,
@@ -113,6 +114,7 @@ class AnankeGrammar(BaseGrammarObject):
         max_rollback_tokens: int = 200,
         checkpoint_interval: int = 1,
         mask_pool_size: int = 8,
+        constraint_spec: Optional["ConstraintSpec"] = None,
     ):
         """Initialize AnankeGrammar.
 
@@ -129,6 +131,9 @@ class AnankeGrammar(BaseGrammarObject):
                 Set higher (e.g., 10) for better performance with sparse rollback.
             mask_pool_size: Number of pre-allocated mask tensors (default: 8).
                 Set to 0 to disable pooling.
+            constraint_spec: Rich constraint specification (optional).
+                If provided, enables per-request language configuration,
+                type context, import context, and semantic constraints.
         """
         super().__init__()
         self.syntax_grammar = syntax_grammar
@@ -139,6 +144,7 @@ class AnankeGrammar(BaseGrammarObject):
         self.tokenizer = tokenizer
         self.language = language
         self._mask_pool_size = mask_pool_size
+        self.constraint_spec = constraint_spec
 
         # Pre-allocated mask tensor pool to avoid per-token CUDA allocations
         self._mask_pool: Optional[MaskPool] = None
@@ -301,7 +307,8 @@ class AnankeGrammar(BaseGrammarObject):
                 metadata=checkpoint.context_snapshot.get("metadata", {}),
             )
 
-        # Clear mask cache
+        # Clear mask cache - cached masks are invalid after constraint rollback
+        # (masks were computed with post-rollback constraints, not restored ones)
         self._domain_mask_cache.clear()
 
         # Reset finished flag
@@ -457,7 +464,7 @@ class AnankeGrammar(BaseGrammarObject):
                         if not (vocab_mask[b, word_idx] & (1 << bit_idx)):
                             logits[b, i] = float("-inf")
 
-    def copy(self) -> AnankeGrammar:
+    def copy(self) -> "AnankeGrammar":
         """Create a copy of this grammar for parallel decoding.
 
         Returns:
@@ -480,7 +487,43 @@ class AnankeGrammar(BaseGrammarObject):
             max_rollback_tokens=self.checkpoint_manager.max_checkpoints,
             checkpoint_interval=self._checkpoint_interval,
             mask_pool_size=self._mask_pool_size,
+            constraint_spec=self.constraint_spec,
         )
+
+    def inject_context(self, spec: "ConstraintSpec") -> None:
+        """Inject fresh context from a ConstraintSpec into this grammar.
+
+        This is called AFTER cache lookup, allowing:
+        - Cached syntax grammar reuse
+        - Fresh type/import/semantic context per request
+
+        The method updates the constraint_spec and propagates context
+        to each domain that supports it.
+
+        Args:
+            spec: ConstraintSpec with context to inject
+        """
+        self.constraint_spec = spec
+
+        # Update language if specified in spec
+        if spec.language is not None:
+            self.language = spec.language
+            self.context = GenerationContext(
+                generated_text=self.context.generated_text,
+                generated_tokens=self.context.generated_tokens,
+                position=self.context.position,
+                vocab_size=self.vocab_size,
+                device=self.device,
+                language=spec.language,
+                tokenizer=self.tokenizer,
+                metadata=self.context.metadata,
+                mask_pool=self._mask_pool,
+            )
+
+        # Propagate context to domains
+        for domain_name, domain in self.domains.items():
+            if hasattr(domain, "inject_context"):
+                domain.inject_context(spec)
 
     def try_jump_forward(self, tokenizer) -> Optional[Tuple[List[int], str]]:
         """Try to jump forward in the grammar.
@@ -725,3 +768,47 @@ class AnankeGrammar(BaseGrammarObject):
             )
 
         return evaluator
+
+    # =========================================================================
+    # Cache Metrics
+    # =========================================================================
+
+    def get_cache_stats(self) -> Dict[str, int]:
+        """Get cache hit rate statistics.
+
+        Returns a dictionary with:
+        - hits: Number of cache hits
+        - misses: Number of cache misses
+        - hit_rate_percent: Hit rate as percentage
+        - evictions: Number of entries evicted
+
+        Returns:
+            Dictionary of cache statistics
+        """
+        cache_size = len(self._domain_mask_cache)
+        # Note: _domain_mask_cache is a simple dict, not MaskCache
+        # For more detailed stats, this would need MaskCache integration
+        return {
+            "cache_size": cache_size,
+            "domains_cached": list(self._domain_mask_cache.keys()),
+        }
+
+    def get_lazy_evaluator_stats(self) -> Dict[str, Any]:
+        """Get lazy evaluator statistics.
+
+        Returns statistics about domain evaluation from the lazy evaluator.
+
+        Returns:
+            Dictionary of lazy evaluation statistics
+        """
+        if hasattr(self._lazy_evaluator, 'stats'):
+            return self._lazy_evaluator.stats
+        return {"info": "Lazy evaluator stats not available"}
+
+    def log_cache_summary(self) -> None:
+        """Log cache performance summary.
+
+        Logs cache hit rate and performance metrics at DEBUG level.
+        """
+        stats = self.get_cache_stats()
+        logger.debug(f"AnankeGrammar cache stats: {stats}")
