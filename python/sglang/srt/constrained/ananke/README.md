@@ -14,7 +14,7 @@ and semantic domains.
 │  │ SyntaxGrammar│  │         Domain Constraints             │   │
 │  │ (llguidance) │  │  ┌──────┐ ┌───────┐ ┌───────────────┐  │   │
 │  │              │  │  │Types │ │Imports│ │ControlFlow    │  │   │
-│  │   CFG-based  │  │  └──┬───┘ └──┬───┘ └──────┬─────────┘  │   │
+│  │   CFG-based  │  │  └──┬───┘ └──┬────┘ └─────┬─────────┘  │   │
 │  │   masking    │  │     │        │            │            │   │
 │  │   (~50μs)    │  │     └────────+────────────┘            │   │
 │  └──────┬───────┘  │              │                         │   │
