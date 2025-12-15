@@ -40,7 +40,28 @@ ANANKE_ENABLED_DOMAINS = os.getenv("ANANKE_ENABLED_DOMAINS", "")
 # GPU configuration
 GPU_TYPE = os.getenv("MODAL_GPU_TYPE", "a100")  # a100, a10g, h100, t4
 GPU_COUNT = int(os.getenv("MODAL_GPU_COUNT", "1"))
-GPU_MEMORY = os.getenv("MODAL_GPU_MEMORY", "40GB")  # For A100: 40GB or 80GB
+GPU_MEMORY = os.getenv("MODAL_GPU_MEMORY", "40GB")  # For A100: 40GB or 80GB; For H100: 80GB
+
+
+def get_gpu_config() -> str:
+    """Get the appropriate GPU configuration string for Modal.
+
+    Returns a string like "A100-80GB" or "H100" based on environment variables.
+    """
+    gpu_type = GPU_TYPE.lower()
+    if gpu_type == "a100":
+        # A100 supports 40GB and 80GB variants
+        return f"A100-{GPU_MEMORY}"
+    elif gpu_type == "a10g":
+        return "A10G"
+    elif gpu_type == "h100":
+        return "H100"
+    elif gpu_type == "t4":
+        return "T4"
+    elif gpu_type == "l4":
+        return "L4"
+    else:
+        raise ValueError(f"Unknown GPU type: {gpu_type}. Supported: a100, a10g, h100, t4, l4")
 
 # Scaling configuration
 CONTAINER_IDLE_TIMEOUT = int(os.getenv("MODAL_IDLE_TIMEOUT", "300"))  # seconds
@@ -92,15 +113,12 @@ sglang_image = (
 # =============================================================================
 
 @app.cls(
-    gpu=modal.gpu.A100(count=GPU_COUNT, size=GPU_MEMORY) if GPU_TYPE == "a100"
-    else modal.gpu.A10G(count=GPU_COUNT) if GPU_TYPE == "a10g"
-    else modal.gpu.H100(count=GPU_COUNT) if GPU_TYPE == "h100"
-    else modal.gpu.T4(count=GPU_COUNT),
+    gpu=get_gpu_config(),
     image=sglang_image,
     volumes={"/models": model_volume},
     container_idle_timeout=CONTAINER_IDLE_TIMEOUT,
     allow_concurrent_inputs=100,
-    secrets=[modal.Secret.from_name("huggingface", required=False)],
+    secrets=[modal.Secret.from_name("huggingface")],
 )
 class SGLangAnanke:
     """SGLang server with Ananke backend on Modal."""
