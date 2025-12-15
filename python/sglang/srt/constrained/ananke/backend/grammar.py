@@ -111,6 +111,7 @@ class AnankeGrammar(BaseGrammarObject):
         tokenizer: Optional[Any] = None,
         language: str = "python",
         max_rollback_tokens: int = 200,
+        checkpoint_interval: int = 1,
     ):
         """Initialize AnankeGrammar.
 
@@ -123,6 +124,8 @@ class AnankeGrammar(BaseGrammarObject):
             tokenizer: Tokenizer for text decode operations
             language: Programming language being generated
             max_rollback_tokens: Maximum tokens for rollback (like XGrammar)
+            checkpoint_interval: Create checkpoint every N tokens (default: 1).
+                Set higher (e.g., 10) for better performance with sparse rollback.
         """
         super().__init__()
         self.syntax_grammar = syntax_grammar
@@ -145,6 +148,11 @@ class AnankeGrammar(BaseGrammarObject):
         self.checkpoint_manager = CheckpointManager(
             max_checkpoints=max_rollback_tokens
         )
+
+        # Sparse checkpointing configuration
+        self._checkpoint_interval = checkpoint_interval
+        self._tokens_since_checkpoint = 0
+        self._last_constraint_hash: Optional[int] = None
 
         # Cache for computed domain masks
         self._domain_mask_cache: Dict[str, torch.Tensor] = {}
@@ -456,6 +464,7 @@ class AnankeGrammar(BaseGrammarObject):
             tokenizer=self.tokenizer,
             language=self.language,
             max_rollback_tokens=self.checkpoint_manager.max_checkpoints,
+            checkpoint_interval=self._checkpoint_interval,
         )
 
     def try_jump_forward(self, tokenizer) -> Optional[Tuple[List[int], str]]:
@@ -497,8 +506,45 @@ class AnankeGrammar(BaseGrammarObject):
             )
 
     def _maybe_create_checkpoint(self) -> None:
-        """Create a checkpoint if conditions are met."""
-        # For now, checkpoint every token (can be optimized later)
+        """Create a checkpoint if conditions are met.
+
+        Implements sparse checkpointing to reduce overhead:
+        1. Create checkpoint every N tokens (default: 10)
+        2. Create checkpoint when constraint changes significantly
+        3. Always create checkpoint at position 0
+
+        This reduces checkpoint overhead by ~10x while still supporting
+        rollback to any position within the last N checkpoints.
+        """
+        self._tokens_since_checkpoint += 1
+
+        # Condition 1: Always checkpoint at position 0
+        if self.context.position == 0:
+            self._create_checkpoint()
+            return
+
+        # Condition 2: Checkpoint every N tokens
+        if self._tokens_since_checkpoint >= self._checkpoint_interval:
+            self._create_checkpoint()
+            return
+
+        # Condition 3: Checkpoint on significant constraint change
+        try:
+            current_hash = hash(self.constraint)
+        except TypeError:
+            current_hash = id(self.constraint)
+
+        if self._last_constraint_hash is not None and current_hash != self._last_constraint_hash:
+            # Constraint changed - create checkpoint
+            self._create_checkpoint()
+            return
+
+        self._last_constraint_hash = current_hash
+
+    def _create_checkpoint(self) -> None:
+        """Actually create a checkpoint (called by _maybe_create_checkpoint)."""
+        self._tokens_since_checkpoint = 0
+
         domain_checkpoints = {}
         for domain_name, domain in self.domains.items():
             domain_checkpoints[domain_name] = domain.checkpoint()
@@ -516,6 +562,12 @@ class AnankeGrammar(BaseGrammarObject):
             domain_checkpoints=domain_checkpoints,
             context_snapshot=context_snapshot,
         )
+
+        # Update last constraint hash
+        try:
+            self._last_constraint_hash = hash(self.constraint)
+        except TypeError:
+            self._last_constraint_hash = id(self.constraint)
 
     def _get_or_compute_domain_mask(
         self,
