@@ -53,10 +53,19 @@ class MockTokenizer:
             vocab: Mapping from token_id to token text
         """
         self.vocab = vocab
+        # Required for TokenClassifier disk cache hash computation
+        self.vocab_size = len(vocab)
 
     def decode(self, token_ids: list[int]) -> str:
         """Decode token IDs to text."""
         return "".join(self.vocab.get(tid, "") for tid in token_ids)
+
+    def get_vocab(self) -> dict[str, int]:
+        """Get vocabulary mapping (token -> id).
+
+        Required for TokenClassifier initialization.
+        """
+        return {text: tid for tid, text in self.vocab.items()}
 
 
 class TestTypeDomainBasics:
