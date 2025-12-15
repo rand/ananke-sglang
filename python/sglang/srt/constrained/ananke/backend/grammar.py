@@ -173,6 +173,9 @@ class AnankeGrammar(BaseGrammarObject):
                 return
 
         # Update each domain constraint
+        # Capture old constraint for change detection
+        old_unified_constraint = self.constraint
+
         new_syntax = self.constraint.syntax
         new_types = self.constraint.types
         new_imports = self.constraint.imports
@@ -180,8 +183,8 @@ class AnankeGrammar(BaseGrammarObject):
         new_semantics = self.constraint.semantics
 
         for domain_name, domain in self.domains.items():
-            old_constraint = getattr(self.constraint, domain_name)
-            new_constraint = domain.observe_token(old_constraint, token, self.context)
+            domain_constraint = getattr(self.constraint, domain_name)
+            new_constraint = domain.observe_token(domain_constraint, token, self.context)
 
             # Update the appropriate field
             if domain_name == "syntax":
@@ -207,8 +210,9 @@ class AnankeGrammar(BaseGrammarObject):
         # Update generation context
         self.context = self.context.extend(token, token_text)
 
-        # Clear mask cache (masks may have changed)
-        self._domain_mask_cache.clear()
+        # Selectively invalidate mask cache (only for domains that changed)
+        # Compare old vs new constraint hashes to detect changes
+        self._invalidate_changed_domain_masks(old_unified_constraint, self.constraint)
 
         # Check for unsatisfiability
         if self.constraint.satisfiability() == Satisfiability.UNSAT:
@@ -506,3 +510,37 @@ class AnankeGrammar(BaseGrammarObject):
         # Apply via vectorized AND with existing mask
         num_words = min(packed.shape[0], mask_size)
         vocab_mask[idx, :num_words] &= packed[:num_words]
+
+    def _invalidate_changed_domain_masks(
+        self,
+        old_constraint: UnifiedConstraint,
+        new_constraint: UnifiedConstraint,
+    ) -> None:
+        """Selectively invalidate cached masks only for domains that changed.
+
+        Instead of clearing the entire cache on every token, we compare
+        constraint hashes to detect which domains actually changed, then
+        only invalidate those.
+
+        Args:
+            old_constraint: Constraint before the token was observed
+            new_constraint: Constraint after the token was observed
+        """
+        domain_names = ["syntax", "types", "imports", "controlflow", "semantics"]
+
+        for domain_name in domain_names:
+            old_domain = getattr(old_constraint, domain_name, None)
+            new_domain = getattr(new_constraint, domain_name, None)
+
+            # Compute hashes for comparison
+            try:
+                old_hash = hash(old_domain) if old_domain is not None else None
+                new_hash = hash(new_domain) if new_domain is not None else None
+            except TypeError:
+                # Unhashable - fall back to identity comparison
+                old_hash = id(old_domain)
+                new_hash = id(new_domain)
+
+            # Invalidate only if changed
+            if old_hash != new_hash:
+                self._domain_mask_cache.pop(domain_name, None)
