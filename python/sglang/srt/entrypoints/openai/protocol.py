@@ -135,6 +135,111 @@ class StructuresResponseFormat(BaseModel):
     end: str
 
 
+# === SGLang Extension: Rich Constraint Specification ===
+# These models enable context-aware constrained generation with type environments,
+# import contexts, and semantic constraints. Ignored by OpenAI-compatible clients.
+
+
+class ConstraintTypeBinding(BaseModel):
+    """Variable-to-type binding for constraint specification."""
+
+    name: str
+    type_expr: str
+    scope: Optional[str] = None
+    mutable: bool = True
+    origin: Optional[str] = None
+
+
+class ConstraintFunctionSignature(BaseModel):
+    """Function signature for constraint specification."""
+
+    name: str
+    params: List[ConstraintTypeBinding] = Field(default_factory=list)
+    return_type: str
+    type_params: List[str] = Field(default_factory=list)
+    decorators: List[str] = Field(default_factory=list)
+    is_async: bool = False
+    is_generator: bool = False
+
+
+class ConstraintImportBinding(BaseModel):
+    """Import binding for constraint specification."""
+
+    module: str
+    name: Optional[str] = None
+    alias: Optional[str] = None
+    is_wildcard: bool = False
+
+
+class ConstraintControlFlowContext(BaseModel):
+    """Control flow context for constraint specification."""
+
+    function_name: Optional[str] = None
+    expected_return_type: Optional[str] = None
+    loop_depth: int = 0
+    loop_variables: List[str] = Field(default_factory=list)
+    in_try_block: bool = False
+    exception_types: List[str] = Field(default_factory=list)
+    in_async_context: bool = False
+    in_generator: bool = False
+    reachable: bool = True
+
+
+class ConstraintSemanticConstraint(BaseModel):
+    """Semantic constraint for SMT-based checking."""
+
+    kind: str  # "precondition", "postcondition", "invariant", "assertion"
+    expression: str
+    scope: Optional[str] = None
+    variables: List[str] = Field(default_factory=list)
+
+
+class ConstraintSpecFormat(BaseModel):
+    """Rich constraint specification for OpenAI-compatible API.
+
+    SGLang extension for context-aware constrained generation.
+    Enables type environments, import contexts, and semantic constraints.
+    Ignored by standard OpenAI clients.
+    """
+
+    version: str = "1.0"
+
+    # Core syntax constraint (one of these required)
+    json_schema: Optional[str] = None
+    regex: Optional[str] = None
+    ebnf: Optional[str] = None
+
+    # Language configuration
+    language: Optional[str] = None
+    language_detection: str = "auto"  # "auto", "explicit", "stack"
+
+    # Type context
+    type_bindings: List[ConstraintTypeBinding] = Field(default_factory=list)
+    function_signatures: List[ConstraintFunctionSignature] = Field(
+        default_factory=list
+    )
+    expected_type: Optional[str] = None
+    type_aliases: Dict[str, str] = Field(default_factory=dict)
+
+    # Import context
+    imports: List[ConstraintImportBinding] = Field(default_factory=list)
+    available_modules: List[str] = Field(default_factory=list)
+    forbidden_imports: List[str] = Field(default_factory=list)
+
+    # Control flow context
+    control_flow: Optional[ConstraintControlFlowContext] = None
+
+    # Semantic constraints
+    preconditions: List[str] = Field(default_factory=list)
+    postconditions: List[str] = Field(default_factory=list)
+    semantic_constraints: List[ConstraintSemanticConstraint] = Field(
+        default_factory=list
+    )
+
+    # Cache control
+    cache_scope: str = "syntax_only"  # "syntax_only", "syntax_and_lang", "full_context"
+
+
 # NOTE(dark): keep this for backward compatibility
 class LegacyStructuralTagResponseFormat(BaseModel):
     type: Literal["structural_tag"]
@@ -240,6 +345,9 @@ class CompletionRequest(BaseModel):
     json_schema: Optional[str] = None
     regex: Optional[str] = None
     ebnf: Optional[str] = None
+    # SGLang extension: Rich constraint specification (see ConstraintSpecFormat)
+    constraint_spec: Optional[ConstraintSpecFormat] = None
+    constraint_uri: Optional[str] = None  # External reference to constraint spec
     repetition_penalty: float = 1.0
     stop_token_ids: Optional[List[int]] = None
     stop_regex: Optional[Union[str, List[str]]] = None
@@ -503,6 +611,9 @@ class ChatCompletionRequest(BaseModel):
     min_tokens: int = 0
     regex: Optional[str] = None
     ebnf: Optional[str] = None
+    # SGLang extension: Rich constraint specification (see ConstraintSpecFormat)
+    constraint_spec: Optional[ConstraintSpecFormat] = None
+    constraint_uri: Optional[str] = None  # External reference to constraint spec
     repetition_penalty: Optional[float] = None
     stop_token_ids: Optional[List[int]] = None
     stop_regex: Optional[Union[str, List[str]]] = None
@@ -657,6 +768,12 @@ class ChatCompletionRequest(BaseModel):
             "logit_bias": self.logit_bias,
             "custom_params": self.custom_params,
         }
+
+        # SGLang extension: Rich constraint specification
+        if self.constraint_spec is not None:
+            sampling_params["constraint_spec"] = self.constraint_spec.model_dump()
+        if self.constraint_uri is not None:
+            sampling_params["constraint_uri"] = self.constraint_uri
 
         if self.response_format and self.response_format.type == "json_schema":
             sampling_params["json_schema"] = convert_json_schema_to_str(
