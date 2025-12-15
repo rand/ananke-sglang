@@ -147,3 +147,43 @@ export fn ananke_is_typescript_keyword(
 ) callconv(.C) bool {
     return classifier.isTypeScriptKeyword(str[0..len]);
 }
+
+/// Export: Check if token is a Go keyword
+export fn ananke_is_go_keyword(
+    str: [*]const u8,
+    len: usize,
+) callconv(.C) bool {
+    return classifier.isGoKeyword(str[0..len]);
+}
+
+/// Export: Check if token is a Rust keyword
+export fn ananke_is_rust_keyword(
+    str: [*]const u8,
+    len: usize,
+) callconv(.C) bool {
+    return classifier.isRustKeyword(str[0..len]);
+}
+
+/// Export: Check if token is a Kotlin keyword
+export fn ananke_is_kotlin_keyword(
+    str: [*]const u8,
+    len: usize,
+) callconv(.C) bool {
+    return classifier.isKotlinKeyword(str[0..len]);
+}
+
+/// Export: Check if token is a Swift keyword
+export fn ananke_is_swift_keyword(
+    str: [*]const u8,
+    len: usize,
+) callconv(.C) bool {
+    return classifier.isSwiftKeyword(str[0..len]);
+}
+
+/// Export: Check if token is a Zig keyword
+export fn ananke_is_zig_keyword(
+    str: [*]const u8,
+    len: usize,
+) callconv(.C) bool {
+    return classifier.isZigKeyword(str[0..len]);
+}

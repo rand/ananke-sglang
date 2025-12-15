@@ -46,7 +46,7 @@ try:
         UnifiedCheckpoint,
     )
     from ..core.constraint import Satisfiability
-    from ..core.domain import ConstraintDomain, GenerationContext
+    from ..core.domain import ConstraintDomain, GenerationContext, MaskPool
     from ..core.unified import (
         UNIFIED_TOP,
         UnifiedConstraint,
@@ -63,7 +63,7 @@ except ImportError:
         UnifiedCheckpoint,
     )
     from core.constraint import Satisfiability
-    from core.domain import ConstraintDomain, GenerationContext
+    from core.domain import ConstraintDomain, GenerationContext, MaskPool
     from core.unified import (
         UNIFIED_TOP,
         UnifiedConstraint,
@@ -112,6 +112,7 @@ class AnankeGrammar(BaseGrammarObject):
         language: str = "python",
         max_rollback_tokens: int = 200,
         checkpoint_interval: int = 1,
+        mask_pool_size: int = 8,
     ):
         """Initialize AnankeGrammar.
 
@@ -126,6 +127,8 @@ class AnankeGrammar(BaseGrammarObject):
             max_rollback_tokens: Maximum tokens for rollback (like XGrammar)
             checkpoint_interval: Create checkpoint every N tokens (default: 1).
                 Set higher (e.g., 10) for better performance with sparse rollback.
+            mask_pool_size: Number of pre-allocated mask tensors (default: 8).
+                Set to 0 to disable pooling.
         """
         super().__init__()
         self.syntax_grammar = syntax_grammar
@@ -135,6 +138,16 @@ class AnankeGrammar(BaseGrammarObject):
         self.device = device
         self.tokenizer = tokenizer
         self.language = language
+        self._mask_pool_size = mask_pool_size
+
+        # Pre-allocated mask tensor pool to avoid per-token CUDA allocations
+        self._mask_pool: Optional[MaskPool] = None
+        if vocab_size > 0 and mask_pool_size > 0:
+            self._mask_pool = MaskPool(
+                vocab_size=vocab_size,
+                device=device,
+                pool_size=mask_pool_size,
+            )
 
         # Generation context
         self.context = GenerationContext(
@@ -142,6 +155,7 @@ class AnankeGrammar(BaseGrammarObject):
             device=device,
             language=language,
             tokenizer=tokenizer,
+            mask_pool=self._mask_pool,
         )
 
         # Checkpoint management for rollback
@@ -465,6 +479,7 @@ class AnankeGrammar(BaseGrammarObject):
             language=self.language,
             max_rollback_tokens=self.checkpoint_manager.max_checkpoints,
             checkpoint_interval=self._checkpoint_interval,
+            mask_pool_size=self._mask_pool_size,
         )
 
     def try_jump_forward(self, tokenizer) -> Optional[Tuple[List[int], str]]:

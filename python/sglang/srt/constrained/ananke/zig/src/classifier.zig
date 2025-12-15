@@ -96,6 +96,85 @@ const TYPESCRIPT_KEYWORDS = [_][]const u8{
 };
 
 // =============================================================================
+// Go Keywords
+// =============================================================================
+
+const GO_KEYWORDS = [_][]const u8{
+    "break",    "case",      "chan",      "const",     "continue",  "default",
+    "defer",    "else",      "fallthrough", "for",     "func",      "go",
+    "goto",     "if",        "import",    "interface", "map",       "package",
+    "range",    "return",    "select",    "struct",    "switch",    "type",
+    "var",
+};
+
+// =============================================================================
+// Rust Keywords
+// =============================================================================
+
+const RUST_KEYWORDS = [_][]const u8{
+    "as",       "async",     "await",     "break",     "const",     "continue",
+    "crate",    "dyn",       "else",      "enum",      "extern",    "false",
+    "fn",       "for",       "if",        "impl",      "in",        "let",
+    "loop",     "match",     "mod",       "move",      "mut",       "pub",
+    "ref",      "return",    "self",      "Self",      "static",    "struct",
+    "super",    "trait",     "true",      "type",      "unsafe",    "use",
+    "where",    "while",
+};
+
+// =============================================================================
+// Kotlin Keywords
+// =============================================================================
+
+const KOTLIN_KEYWORDS = [_][]const u8{
+    "abstract", "actual",    "annotation", "as",       "break",     "by",
+    "catch",    "class",     "companion",  "const",    "constructor", "continue",
+    "crossinline", "data",   "delegate",   "do",       "dynamic",   "else",
+    "enum",     "expect",    "external",   "false",    "final",     "finally",
+    "for",      "fun",       "get",        "if",       "import",    "in",
+    "infix",    "init",      "inline",     "inner",    "interface", "internal",
+    "is",       "it",        "lateinit",   "noinline", "null",      "object",
+    "open",     "operator",  "out",        "override", "package",   "private",
+    "protected", "public",   "reified",    "return",   "sealed",    "set",
+    "super",    "suspend",   "tailrec",    "this",     "throw",     "true",
+    "try",      "typealias", "typeof",     "val",      "var",       "vararg",
+    "when",     "where",     "while",
+};
+
+// =============================================================================
+// Swift Keywords
+// =============================================================================
+
+const SWIFT_KEYWORDS = [_][]const u8{
+    "Any",      "as",        "associatedtype", "break", "case",      "catch",
+    "class",    "continue",  "default",   "defer",     "deinit",    "do",
+    "else",     "enum",      "extension", "fallthrough", "false",   "fileprivate",
+    "for",      "func",      "guard",     "if",        "import",    "in",
+    "indirect", "infix",     "init",      "inout",     "internal",  "is",
+    "let",      "nil",       "open",      "operator",  "optional",  "override",
+    "postfix",  "prefix",    "private",   "protocol",  "public",    "repeat",
+    "required", "rethrows",  "return",    "self",      "Self",      "set",
+    "some",     "static",    "struct",    "subscript", "super",     "switch",
+    "throw",    "throws",    "true",      "try",       "Type",      "typealias",
+    "unowned",  "var",       "weak",      "where",     "while",
+};
+
+// =============================================================================
+// Zig Keywords
+// =============================================================================
+
+const ZIG_KEYWORDS = [_][]const u8{
+    "addrspace", "align",    "allowzero", "and",       "anyframe",  "anytype",
+    "asm",       "async",    "await",     "break",     "callconv",  "catch",
+    "comptime",  "const",    "continue",  "defer",     "else",      "enum",
+    "errdefer",  "error",    "export",    "extern",    "false",     "fn",
+    "for",       "if",       "inline",    "linksection", "noalias", "noinline",
+    "nosuspend", "null",     "opaque",    "or",        "orelse",    "packed",
+    "pub",       "resume",   "return",    "struct",    "suspend",   "switch",
+    "test",      "threadlocal", "true",   "try",       "undefined", "union",
+    "unreachable", "usingnamespace", "var", "volatile", "while",
+};
+
+// =============================================================================
 // Perfect Hash Implementation
 // =============================================================================
 
@@ -132,6 +211,56 @@ pub fn isPythonBuiltin(str: []const u8) bool {
 /// Check if a string is a TypeScript keyword
 pub fn isTypeScriptKeyword(str: []const u8) bool {
     for (TYPESCRIPT_KEYWORDS) |kw| {
+        if (std.mem.eql(u8, str, kw)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Check if a string is a Go keyword
+pub fn isGoKeyword(str: []const u8) bool {
+    for (GO_KEYWORDS) |kw| {
+        if (std.mem.eql(u8, str, kw)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Check if a string is a Rust keyword
+pub fn isRustKeyword(str: []const u8) bool {
+    for (RUST_KEYWORDS) |kw| {
+        if (std.mem.eql(u8, str, kw)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Check if a string is a Kotlin keyword
+pub fn isKotlinKeyword(str: []const u8) bool {
+    for (KOTLIN_KEYWORDS) |kw| {
+        if (std.mem.eql(u8, str, kw)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Check if a string is a Swift keyword
+pub fn isSwiftKeyword(str: []const u8) bool {
+    for (SWIFT_KEYWORDS) |kw| {
+        if (std.mem.eql(u8, str, kw)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Check if a string is a Zig keyword
+pub fn isZigKeyword(str: []const u8) bool {
+    for (ZIG_KEYWORDS) |kw| {
         if (std.mem.eql(u8, str, kw)) {
             return true;
         }
@@ -216,8 +345,20 @@ pub fn classifyToken(str: []const u8, lang: Language) TokenCategory {
             .TypeScript => {
                 if (isTypeScriptKeyword(str)) return .KEYWORD;
             },
-            else => {
-                // TODO: Add more languages
+            .Go => {
+                if (isGoKeyword(str)) return .KEYWORD;
+            },
+            .Rust => {
+                if (isRustKeyword(str)) return .KEYWORD;
+            },
+            .Kotlin => {
+                if (isKotlinKeyword(str)) return .KEYWORD;
+            },
+            .Swift => {
+                if (isSwiftKeyword(str)) return .KEYWORD;
+            },
+            .Zig => {
+                if (isZigKeyword(str)) return .KEYWORD;
             },
         }
 
@@ -321,4 +462,40 @@ test "TypeScript keywords" {
     try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("const", .TypeScript));
     try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("interface", .TypeScript));
     try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("async", .TypeScript));
+}
+
+test "Go keywords" {
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("func", .Go));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("defer", .Go));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("chan", .Go));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("go", .Go));
+    try std.testing.expectEqual(TokenCategory.IDENTIFIER, classifyToken("goroutine", .Go)); // Not a keyword
+}
+
+test "Rust keywords" {
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("fn", .Rust));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("impl", .Rust));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("match", .Rust));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("mut", .Rust));
+}
+
+test "Kotlin keywords" {
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("fun", .Kotlin));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("val", .Kotlin));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("var", .Kotlin));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("when", .Kotlin));
+}
+
+test "Swift keywords" {
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("func", .Swift));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("let", .Swift));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("guard", .Swift));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("protocol", .Swift));
+}
+
+test "Zig keywords" {
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("fn", .Zig));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("comptime", .Zig));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("errdefer", .Zig));
+    try std.testing.expectEqual(TokenCategory.KEYWORD, classifyToken("unreachable", .Zig));
 }
