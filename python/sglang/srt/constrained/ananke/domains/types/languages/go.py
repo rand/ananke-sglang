@@ -792,13 +792,38 @@ class GoTypeSystem(LanguageTypeSystem):
             if source_name == "error" or source_name.endswith("error"):
                 return True
 
-        # Stringer interface
+        # Stringer interface (fmt.Stringer)
         if len(required_methods) == 1 and "String" in required_methods:
-            # Many types implement Stringer
-            pass
+            # Common types that implement Stringer
+            stringer_types = {
+                "time", "duration", "ip", "url", "regexp",
+                "int", "float", "rat", "complex",  # big package types
+            }
+            if any(s in source_name for s in stringer_types):
+                return True
+            # Types explicitly named as stringers or with string representation
+            if "stringer" in source_name or "string" in source_name:
+                return True
 
-        # fmt.Formatter, io.Reader, io.Writer, etc. would need method tracking
-        # For now, be conservative and return False for unknown types
+        # io.Reader interface
+        if len(required_methods) == 1 and "Read" in required_methods:
+            reader_types = {"reader", "file", "buffer", "conn", "response"}
+            if any(r in source_name for r in reader_types):
+                return True
+
+        # io.Writer interface
+        if len(required_methods) == 1 and "Write" in required_methods:
+            writer_types = {"writer", "file", "buffer", "conn", "response"}
+            if any(w in source_name for w in writer_types):
+                return True
+
+        # io.Closer interface
+        if len(required_methods) == 1 and "Close" in required_methods:
+            closer_types = {"file", "conn", "client", "response", "reader", "writer"}
+            if any(c in source_name for c in closer_types):
+                return True
+
+        # For unknown interfaces, be conservative
         return False
 
     def _check_struct_interface(

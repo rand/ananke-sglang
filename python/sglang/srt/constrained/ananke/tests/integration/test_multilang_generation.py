@@ -13,8 +13,9 @@
 # ==============================================================================
 """Integration tests for multi-language code generation.
 
-Tests the integration of Zig, Rust, and TypeScript type systems, import resolvers,
+Tests the integration of all supported language type systems, import resolvers,
 token classifiers, and parsers in the context of constrained code generation.
+Covers: Go, Kotlin, Python, Rust, Swift, TypeScript, and Zig.
 """
 
 import pytest
@@ -33,15 +34,51 @@ from domains.types.languages.typescript import (
     TSObjectType,
     TSUnionType,
 )
+from domains.types.languages.go import (
+    GoTypeSystem,
+    GO_INT,
+    GO_BOOL,
+    GO_STRING,
+    GO_ANY,
+    GoSliceType,
+    GoMapType,
+)
+from domains.types.languages.kotlin import (
+    KotlinTypeSystem,
+    KOTLIN_INT,
+    KOTLIN_BOOLEAN,
+    KOTLIN_STRING,
+    KOTLIN_ANY,
+    KotlinNullableType,
+    KotlinListType,
+)
+from domains.types.languages.swift import (
+    SwiftTypeSystem,
+    SWIFT_INT,
+    SWIFT_BOOL,
+    SWIFT_STRING,
+    SWIFT_ANY,
+    SwiftOptionalType,
+    SwiftArrayType,
+)
 from domains.imports.resolvers.zig import ZigImportResolver
 from domains.imports.resolvers.rust import RustImportResolver
 from domains.imports.resolvers.typescript import TypeScriptImportResolver
+from domains.imports.resolvers.go import GoImportResolver
+from domains.imports.resolvers.kotlin import KotlinImportResolver
+from domains.imports.resolvers.swift import SwiftImportResolver
 from core.token_classifier_zig import classify_zig_token, ZIG_ALL_KEYWORDS
 from core.token_classifier_rust import classify_rust_token, RUST_ALL_KEYWORDS
 from core.token_classifier_typescript import classify_typescript_token, TYPESCRIPT_ALL_KEYWORDS
+from core.token_classifier_go import classify_go_token, GO_ALL_KEYWORDS
+from core.token_classifier_kotlin import classify_kotlin_token, KOTLIN_ALL_KEYWORDS
+from core.token_classifier_swift import classify_swift_token, SWIFT_ALL_KEYWORDS
 from parsing.languages.zig import ZigIncrementalParser, create_zig_parser
 from parsing.languages.rust import RustIncrementalParser, create_rust_parser
 from parsing.languages.typescript import TypeScriptIncrementalParser, create_typescript_parser
+from parsing.languages.go import GoIncrementalParser, create_go_parser
+from parsing.languages.kotlin import KotlinIncrementalParser, create_kotlin_parser
+from parsing.languages.swift import SwiftIncrementalParser, create_swift_parser
 
 
 # ===========================================================================
@@ -345,12 +382,254 @@ class TestTypeScriptGenerationIntegration:
 
 
 # ===========================================================================
+# Go Generation Integration Tests
+# ===========================================================================
+
+
+class TestGoGenerationIntegration:
+    """Integration tests for Go code generation."""
+
+    @pytest.fixture
+    def ts(self):
+        return GoTypeSystem()
+
+    @pytest.fixture
+    def resolver(self):
+        return GoImportResolver()
+
+    @pytest.fixture
+    def parser(self):
+        return create_go_parser()
+
+    def test_go_in_supported_languages(self):
+        """Go should be in supported languages."""
+        langs = supported_languages()
+        assert "go" in langs
+
+    def test_get_go_type_system(self):
+        """Should get Go type system."""
+        ts = get_type_system("go")
+        assert isinstance(ts, GoTypeSystem)
+
+    def test_goroutine_function_generation(self, ts, parser):
+        """Test generation of goroutine functions."""
+        source = "func worker(ch chan int) {"
+        result = parser.parse_initial(source)
+
+        # Should detect missing body
+        holes = parser.find_holes()
+        assert len(holes) > 0
+
+        # Type system should understand channel types
+        chan_type = ts.parse_type_annotation("chan int")
+        assert chan_type is not None
+
+    def test_error_handling(self, ts, parser):
+        """Test error handling patterns."""
+        source = "func readFile(path string) ([]byte, error)"
+        result = parser.parse_initial(source)
+
+        # Type system should parse error type
+        error_type = ts.parse_type_annotation("error")
+        assert error_type is not None
+
+    def test_interface_handling(self, ts, parser):
+        """Test interface type handling."""
+        source = """type Reader interface {
+    Read(p []byte) (n int, err error)
+}"""
+        result = parser.parse_initial(source)
+        assert result.ast is not None
+
+    def test_slice_and_map_types(self, ts):
+        """Test Go slice and map type parsing."""
+        slice_type = ts.parse_type_annotation("[]string")
+        assert slice_type is not None
+
+        map_type = ts.parse_type_annotation("map[string]int")
+        assert map_type is not None
+
+    def test_std_import_resolution(self, resolver):
+        """Test Go standard library import resolution."""
+        result = resolver.resolve("fmt")
+        assert result is not None
+
+        result = resolver.resolve("io")
+        assert result is not None
+
+    def test_token_classification(self):
+        """Test Go token classification consistency."""
+        for keyword in ["func", "var", "const", "type", "struct"]:
+            category, kw, _ = classify_go_token(keyword)
+            assert kw == keyword
+
+
+# ===========================================================================
+# Kotlin Generation Integration Tests
+# ===========================================================================
+
+
+class TestKotlinGenerationIntegration:
+    """Integration tests for Kotlin code generation."""
+
+    @pytest.fixture
+    def ts(self):
+        return KotlinTypeSystem()
+
+    @pytest.fixture
+    def resolver(self):
+        return KotlinImportResolver()
+
+    @pytest.fixture
+    def parser(self):
+        return create_kotlin_parser()
+
+    def test_kotlin_in_supported_languages(self):
+        """Kotlin should be in supported languages."""
+        langs = supported_languages()
+        assert "kotlin" in langs
+
+    def test_get_kotlin_type_system(self):
+        """Should get Kotlin type system."""
+        ts = get_type_system("kotlin")
+        assert isinstance(ts, KotlinTypeSystem)
+
+    def test_nullable_type_generation(self, ts, parser):
+        """Test nullable type handling."""
+        source = "fun process(value: String?): Int {"
+        result = parser.parse_initial(source)
+
+        # Should detect missing body
+        holes = parser.find_holes()
+        assert len(holes) > 0
+
+        # Type system should understand nullable types
+        nullable_type = ts.parse_type_annotation("String?")
+        assert nullable_type is not None
+
+    def test_when_expression(self, ts, parser):
+        """Test when expression handling."""
+        source = """when (x) {
+    1 -> "one"
+    2 -> "two"
+    else -> "other"
+}"""
+        result = parser.parse_initial(source)
+        assert result.ast is not None
+
+    def test_lambda_generation(self, ts, parser):
+        """Test lambda expression generation."""
+        source = "val sum = { a: Int, b: Int -> a + b }"
+        result = parser.parse_initial(source)
+        assert result.ast is not None
+
+    def test_collection_types(self, ts):
+        """Test Kotlin collection type parsing."""
+        list_type = ts.parse_type_annotation("List<String>")
+        assert list_type is not None
+
+        map_type = ts.parse_type_annotation("Map<String, Int>")
+        assert map_type is not None
+
+    def test_kotlin_import_resolution(self, resolver):
+        """Test Kotlin stdlib import resolution."""
+        result = resolver.resolve("kotlin.collections")
+        assert result is not None
+
+    def test_token_classification(self):
+        """Test Kotlin token classification consistency."""
+        for keyword in ["fun", "val", "var", "class", "when"]:
+            category, kw, _ = classify_kotlin_token(keyword)
+            assert kw == keyword
+
+
+# ===========================================================================
+# Swift Generation Integration Tests
+# ===========================================================================
+
+
+class TestSwiftGenerationIntegration:
+    """Integration tests for Swift code generation."""
+
+    @pytest.fixture
+    def ts(self):
+        return SwiftTypeSystem()
+
+    @pytest.fixture
+    def resolver(self):
+        return SwiftImportResolver()
+
+    @pytest.fixture
+    def parser(self):
+        return create_swift_parser()
+
+    def test_swift_in_supported_languages(self):
+        """Swift should be in supported languages."""
+        langs = supported_languages()
+        assert "swift" in langs
+
+    def test_get_swift_type_system(self):
+        """Should get Swift type system."""
+        ts = get_type_system("swift")
+        assert isinstance(ts, SwiftTypeSystem)
+
+    def test_optional_type_generation(self, ts, parser):
+        """Test optional type handling."""
+        source = "func process(value: String?) -> Int {"
+        result = parser.parse_initial(source)
+
+        # Should detect missing body
+        holes = parser.find_holes()
+        assert len(holes) > 0
+
+        # Type system should understand optional types
+        optional_type = ts.parse_type_annotation("String?")
+        assert optional_type is not None
+
+    def test_guard_statement(self, ts, parser):
+        """Test guard statement handling."""
+        source = """guard let value = optional else {
+    return
+}"""
+        result = parser.parse_initial(source)
+        assert result.ast is not None
+
+    def test_protocol_conformance(self, ts, parser):
+        """Test protocol conformance."""
+        source = """struct Point: Equatable {
+    var x: Int
+    var y: Int
+}"""
+        result = parser.parse_initial(source)
+        assert result.ast is not None
+
+    def test_collection_types(self, ts):
+        """Test Swift collection type parsing."""
+        array_type = ts.parse_type_annotation("[String]")
+        assert array_type is not None
+
+        dict_type = ts.parse_type_annotation("[String: Int]")
+        assert dict_type is not None
+
+    def test_swift_import_resolution(self, resolver):
+        """Test Swift framework import resolution."""
+        result = resolver.resolve("Foundation")
+        assert result is not None
+
+    def test_token_classification(self):
+        """Test Swift token classification consistency."""
+        for keyword in ["func", "let", "var", "class", "struct"]:
+            category, kw, _ = classify_swift_token(keyword)
+            assert kw == keyword
+
+
+# ===========================================================================
 # Cross-Language Comparison Tests
 # ===========================================================================
 
 
 class TestCrossLanguageComparison:
-    """Tests comparing Zig, Rust, and TypeScript implementations."""
+    """Tests comparing all supported language implementations."""
 
     @pytest.fixture
     def zig_ts(self):
@@ -363,6 +642,32 @@ class TestCrossLanguageComparison:
     @pytest.fixture
     def ts_ts(self):
         return TypeScriptTypeSystem()
+
+    @pytest.fixture
+    def go_ts(self):
+        return GoTypeSystem()
+
+    @pytest.fixture
+    def kotlin_ts(self):
+        return KotlinTypeSystem()
+
+    @pytest.fixture
+    def swift_ts(self):
+        return SwiftTypeSystem()
+
+    def test_all_seven_languages_supported(self):
+        """All seven languages should be in supported languages."""
+        langs = supported_languages()
+        expected = {"python", "typescript", "go", "rust", "kotlin", "swift", "zig"}
+        assert expected.issubset(set(langs))
+
+    def test_all_seven_type_systems_different(
+        self, zig_ts, rust_ts, ts_ts, go_ts, kotlin_ts, swift_ts
+    ):
+        """All type systems should be distinct."""
+        type_systems = [zig_ts, rust_ts, ts_ts, go_ts, kotlin_ts, swift_ts]
+        names = [ts.name for ts in type_systems]
+        assert len(set(names)) == len(names)  # All unique
 
     def test_primitive_types_both_support_i32(self, zig_ts, rust_ts):
         """Both languages should support i32."""
