@@ -577,7 +577,7 @@ class SwiftTypeSystem(LanguageTypeSystem):
         elif literal.kind == LiteralKind.NONE:
             # nil needs context
             return SwiftOptionalType(SWIFT_ANY)
-        elif literal.kind == LiteralKind.CHAR:
+        elif literal.kind == LiteralKind.CHARACTER:
             return SWIFT_CHARACTER
         else:
             return SWIFT_ANY

@@ -510,7 +510,7 @@ class KotlinTypeSystem(LanguageTypeSystem):
         """Infer the type of a literal value."""
         if literal.kind == LiteralKind.INTEGER:
             # Kotlin infers Int by default, Long if too big
-            value = literal.raw_value
+            value = literal.value
             if isinstance(value, int):
                 if -2147483648 <= value <= 2147483647:
                     return KOTLIN_INT
@@ -525,7 +525,7 @@ class KotlinTypeSystem(LanguageTypeSystem):
         elif literal.kind == LiteralKind.NONE:
             # null has type Nothing?
             return KotlinNullableType(KOTLIN_NOTHING)
-        elif literal.kind == LiteralKind.CHAR:
+        elif literal.kind == LiteralKind.CHARACTER:
             return KOTLIN_CHAR
         else:
             return KOTLIN_ANY
