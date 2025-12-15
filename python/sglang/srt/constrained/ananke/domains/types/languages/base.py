@@ -387,6 +387,28 @@ def get_type_system(language: str) -> LanguageTypeSystem:
     except ImportError:
         pass
 
+    # Try to import Go type system if available
+    try:
+        from domains.types.languages.go import GoTypeSystem
+        systems["go"] = GoTypeSystem
+    except ImportError:
+        pass
+
+    # Try to import Kotlin type system if available
+    try:
+        from domains.types.languages.kotlin import KotlinTypeSystem
+        systems["kotlin"] = KotlinTypeSystem
+        systems["kt"] = KotlinTypeSystem
+    except ImportError:
+        pass
+
+    # Try to import Swift type system if available
+    try:
+        from domains.types.languages.swift import SwiftTypeSystem
+        systems["swift"] = SwiftTypeSystem
+    except ImportError:
+        pass
+
     language_lower = language.lower()
     if language_lower not in systems:
         supported = ", ".join(sorted(set(systems.keys())))
@@ -423,6 +445,27 @@ def supported_languages() -> List[str]:
     try:
         from domains.types.languages.typescript import TypeScriptTypeSystem
         languages.append("typescript")
+    except ImportError:
+        pass
+
+    # Check for Go support
+    try:
+        from domains.types.languages.go import GoTypeSystem
+        languages.append("go")
+    except ImportError:
+        pass
+
+    # Check for Kotlin support
+    try:
+        from domains.types.languages.kotlin import KotlinTypeSystem
+        languages.append("kotlin")
+    except ImportError:
+        pass
+
+    # Check for Swift support
+    try:
+        from domains.types.languages.swift import SwiftTypeSystem
+        languages.append("swift")
     except ImportError:
         pass
 

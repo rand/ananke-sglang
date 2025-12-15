@@ -61,6 +61,30 @@ from .typescript import (
     extract_typescript_exports,
     create_typescript_resolver,
 )
+from .go import (
+    GoImportResolver,
+    GO_STANDARD_LIBRARY,
+    GO_POPULAR_PACKAGES,
+    create_go_resolver,
+)
+from .kotlin import (
+    KotlinImportResolver,
+    KOTLIN_STANDARD_LIBRARY,
+    KOTLINX_COROUTINES,
+    KOTLINX_SERIALIZATION,
+    KOTLIN_POPULAR_PACKAGES,
+    create_kotlin_resolver,
+)
+from .swift import (
+    SwiftImportResolver,
+    SWIFT_STANDARD_LIBRARY,
+    FOUNDATION_FRAMEWORK,
+    UIKIT_FRAMEWORK,
+    SWIFTUI_FRAMEWORK,
+    COMBINE_FRAMEWORK,
+    SWIFT_POPULAR_PACKAGES,
+    create_swift_resolver,
+)
 
 __all__ = [
     # Base types
@@ -97,4 +121,25 @@ __all__ = [
     "parse_tsconfig",
     "extract_typescript_exports",
     "create_typescript_resolver",
+    # Go resolver
+    "GoImportResolver",
+    "GO_STANDARD_LIBRARY",
+    "GO_POPULAR_PACKAGES",
+    "create_go_resolver",
+    # Kotlin resolver
+    "KotlinImportResolver",
+    "KOTLIN_STANDARD_LIBRARY",
+    "KOTLINX_COROUTINES",
+    "KOTLINX_SERIALIZATION",
+    "KOTLIN_POPULAR_PACKAGES",
+    "create_kotlin_resolver",
+    # Swift resolver
+    "SwiftImportResolver",
+    "SWIFT_STANDARD_LIBRARY",
+    "FOUNDATION_FRAMEWORK",
+    "UIKIT_FRAMEWORK",
+    "SWIFTUI_FRAMEWORK",
+    "COMBINE_FRAMEWORK",
+    "SWIFT_POPULAR_PACKAGES",
+    "create_swift_resolver",
 ]

@@ -87,6 +87,28 @@ def get_parser(language: str) -> IncrementalParser:
     except ImportError:
         pass
 
+    # Try to import Go parser if available
+    try:
+        from parsing.languages.go import GoIncrementalParser
+        parsers["go"] = GoIncrementalParser
+    except ImportError:
+        pass
+
+    # Try to import Kotlin parser if available
+    try:
+        from parsing.languages.kotlin import KotlinIncrementalParser
+        parsers["kotlin"] = KotlinIncrementalParser
+        parsers["kt"] = KotlinIncrementalParser
+    except ImportError:
+        pass
+
+    # Try to import Swift parser if available
+    try:
+        from parsing.languages.swift import SwiftIncrementalParser
+        parsers["swift"] = SwiftIncrementalParser
+    except ImportError:
+        pass
+
     language_lower = language.lower()
     if language_lower not in parsers:
         supported = ", ".join(sorted(set(parsers.keys())))

@@ -696,7 +696,7 @@ def get_language_keywords(language: str) -> FrozenSet[str]:
     """Get all keywords for a programming language.
 
     Args:
-        language: Language name ("python", "zig", "rust", "typescript")
+        language: Language name ("python", "zig", "rust", "typescript", "go")
 
     Returns:
         Frozen set of keyword strings
@@ -712,6 +712,15 @@ def get_language_keywords(language: str) -> FrozenSet[str]:
     elif language in ("typescript", "ts", "javascript", "js"):
         from core.token_classifier_typescript import TYPESCRIPT_ALL_KEYWORDS
         return TYPESCRIPT_ALL_KEYWORDS
+    elif language == "go":
+        from core.token_classifier_go import GO_ALL_KEYWORDS
+        return GO_ALL_KEYWORDS
+    elif language in ("kotlin", "kt"):
+        from core.token_classifier_kotlin import KOTLIN_ALL_KEYWORDS
+        return KOTLIN_ALL_KEYWORDS
+    elif language == "swift":
+        from core.token_classifier_swift import SWIFT_ALL_KEYWORDS
+        return SWIFT_ALL_KEYWORDS
     else:
         return PYTHON_ALL_KEYWORDS  # Default to Python
 
@@ -720,7 +729,7 @@ def get_language_builtins(language: str) -> FrozenSet[str]:
     """Get all builtins for a programming language.
 
     Args:
-        language: Language name ("python", "zig", "rust", "typescript")
+        language: Language name ("python", "zig", "rust", "typescript", "go")
 
     Returns:
         Frozen set of builtin strings
@@ -736,6 +745,15 @@ def get_language_builtins(language: str) -> FrozenSet[str]:
     elif language in ("typescript", "ts", "javascript", "js"):
         from core.token_classifier_typescript import TYPESCRIPT_ALL_BUILTINS
         return TYPESCRIPT_ALL_BUILTINS
+    elif language == "go":
+        from core.token_classifier_go import get_go_builtins
+        return frozenset(get_go_builtins())
+    elif language in ("kotlin", "kt"):
+        from core.token_classifier_kotlin import KOTLIN_ALL_BUILTINS
+        return KOTLIN_ALL_BUILTINS
+    elif language == "swift":
+        from core.token_classifier_swift import SWIFT_ALL_BUILTINS
+        return SWIFT_ALL_BUILTINS
     else:
         return PYTHON_BUILTINS  # Default to Python
 
@@ -750,7 +768,7 @@ def classify_token_for_language(
 
     Args:
         text: The token text to classify
-        language: Programming language ("python", "zig", "rust", "typescript")
+        language: Programming language ("python", "zig", "rust", "typescript", "go")
 
     Returns:
         Tuple of (category, keyword_name or None, literal_value or None)
@@ -766,6 +784,18 @@ def classify_token_for_language(
     elif language in ("typescript", "ts", "javascript", "js"):
         from core.token_classifier_typescript import classify_typescript_token
         result = classify_typescript_token(stripped)
+        return (result.category, result.keyword_name, result.literal_value)
+    elif language == "go":
+        from core.token_classifier_go import classify_go_token
+        result = classify_go_token(stripped)
+        return (result.category, result.keyword_name, result.literal_value)
+    elif language in ("kotlin", "kt"):
+        from core.token_classifier_kotlin import classify_kotlin_token
+        result = classify_kotlin_token(stripped)
+        return (result.category, result.keyword_name, result.literal_value)
+    elif language == "swift":
+        from core.token_classifier_swift import classify_swift_token
+        result = classify_swift_token(stripped)
         return (result.category, result.keyword_name, result.literal_value)
     else:
         # Python (default)
@@ -843,4 +873,4 @@ def supported_classifier_languages() -> List[str]:
     Returns:
         List of supported language names
     """
-    return ["python", "zig", "rust", "typescript"]
+    return ["python", "zig", "rust", "typescript", "go", "kotlin", "swift"]

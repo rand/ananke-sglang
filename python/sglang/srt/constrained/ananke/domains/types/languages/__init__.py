@@ -11,7 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Language-specific type systems for Python, Zig, Rust, TypeScript, and more.
+"""Language-specific type systems for Python, Zig, Rust, TypeScript, Go, and more.
 
 This package provides type system implementations for multiple programming
 languages, enabling language-aware type checking during code generation.
@@ -21,9 +21,7 @@ Currently supported:
 - Zig (with full comptime support)
 - Rust (with ownership and lifetime support)
 - TypeScript (with structural typing)
-
-Planned:
-- Go
+- Go (with interfaces and generics)
 
 Usage:
     >>> from domains.types.languages import get_type_system, PythonTypeSystem
@@ -131,6 +129,82 @@ from domains.types.languages.typescript import (
     TSInferType,
 )
 
+from domains.types.languages.go import (
+    GoTypeSystem,
+    # Primitives
+    GO_BOOL, GO_STRING,
+    GO_INT, GO_INT8, GO_INT16, GO_INT32, GO_INT64,
+    GO_UINT, GO_UINT8, GO_UINT16, GO_UINT32, GO_UINT64,
+    GO_FLOAT32, GO_FLOAT64,
+    GO_COMPLEX64, GO_COMPLEX128,
+    GO_BYTE, GO_RUNE,
+    GO_ANY, GO_ERROR,
+    GO_UNTYPED_INT, GO_UNTYPED_FLOAT, GO_UNTYPED_STRING,
+    # Compound types
+    GoArrayType,
+    GoSliceType,
+    GoMapType,
+    GoPointerType,
+    GoChannelType,
+    GoFunctionType,
+    GoInterfaceType,
+    GoStructType,
+    GoGenericType,
+    GoNamedType,
+)
+
+from domains.types.languages.kotlin import (
+    KotlinTypeSystem,
+    # Primitives
+    KOTLIN_BYTE, KOTLIN_SHORT, KOTLIN_INT, KOTLIN_LONG,
+    KOTLIN_FLOAT, KOTLIN_DOUBLE,
+    KOTLIN_UBYTE, KOTLIN_USHORT, KOTLIN_UINT, KOTLIN_ULONG,
+    KOTLIN_BOOLEAN, KOTLIN_CHAR, KOTLIN_STRING,
+    KOTLIN_UNIT, KOTLIN_ANY, KOTLIN_NOTHING,
+    # Compound types
+    KotlinNullableType,
+    KotlinArrayType,
+    KotlinPrimitiveArrayType,
+    KotlinListType,
+    KotlinSetType,
+    KotlinMapType,
+    KotlinPairType,
+    KotlinFunctionType,
+    KotlinTypeParameter,
+    KotlinGenericType,
+    KotlinStarProjection,
+    KotlinClassType,
+    KotlinEnumType,
+)
+
+from domains.types.languages.swift import (
+    SwiftTypeSystem,
+    # Primitives
+    SWIFT_INT, SWIFT_INT8, SWIFT_INT16, SWIFT_INT32, SWIFT_INT64,
+    SWIFT_UINT, SWIFT_UINT8, SWIFT_UINT16, SWIFT_UINT32, SWIFT_UINT64,
+    SWIFT_FLOAT, SWIFT_DOUBLE, SWIFT_FLOAT16, SWIFT_FLOAT80,
+    SWIFT_BOOL, SWIFT_CHARACTER, SWIFT_STRING,
+    SWIFT_VOID, SWIFT_NEVER, SWIFT_ANY, SWIFT_ANY_OBJECT,
+    # Compound types
+    SwiftOptionalType,
+    SwiftImplicitlyUnwrappedOptionalType,
+    SwiftArrayType,
+    SwiftDictionaryType,
+    SwiftSetType,
+    SwiftTupleType,
+    SwiftFunctionType,
+    SwiftClosureType,
+    SwiftProtocolType,
+    SwiftProtocolCompositionType,
+    SwiftGenericType,
+    SwiftTypeParameter,
+    SwiftMetatypeType,
+    SwiftExistentialType,
+    SwiftOpaqueType,
+    SwiftResultType,
+    SwiftNamedType,
+)
+
 
 __all__ = [
     # Base
@@ -204,4 +278,68 @@ __all__ = [
     "TSTemplateLiteralType",
     "TSTypeReference",
     "TSInferType",
+    # Go
+    "GoTypeSystem",
+    "GO_BOOL", "GO_STRING",
+    "GO_INT", "GO_INT8", "GO_INT16", "GO_INT32", "GO_INT64",
+    "GO_UINT", "GO_UINT8", "GO_UINT16", "GO_UINT32", "GO_UINT64",
+    "GO_FLOAT32", "GO_FLOAT64",
+    "GO_COMPLEX64", "GO_COMPLEX128",
+    "GO_BYTE", "GO_RUNE",
+    "GO_ANY", "GO_ERROR",
+    "GO_UNTYPED_INT", "GO_UNTYPED_FLOAT", "GO_UNTYPED_STRING",
+    "GoArrayType",
+    "GoSliceType",
+    "GoMapType",
+    "GoPointerType",
+    "GoChannelType",
+    "GoFunctionType",
+    "GoInterfaceType",
+    "GoStructType",
+    "GoGenericType",
+    "GoNamedType",
+    # Kotlin
+    "KotlinTypeSystem",
+    "KOTLIN_BYTE", "KOTLIN_SHORT", "KOTLIN_INT", "KOTLIN_LONG",
+    "KOTLIN_FLOAT", "KOTLIN_DOUBLE",
+    "KOTLIN_UBYTE", "KOTLIN_USHORT", "KOTLIN_UINT", "KOTLIN_ULONG",
+    "KOTLIN_BOOLEAN", "KOTLIN_CHAR", "KOTLIN_STRING",
+    "KOTLIN_UNIT", "KOTLIN_ANY", "KOTLIN_NOTHING",
+    "KotlinNullableType",
+    "KotlinArrayType",
+    "KotlinPrimitiveArrayType",
+    "KotlinListType",
+    "KotlinSetType",
+    "KotlinMapType",
+    "KotlinPairType",
+    "KotlinFunctionType",
+    "KotlinTypeParameter",
+    "KotlinGenericType",
+    "KotlinStarProjection",
+    "KotlinClassType",
+    "KotlinEnumType",
+    # Swift
+    "SwiftTypeSystem",
+    "SWIFT_INT", "SWIFT_INT8", "SWIFT_INT16", "SWIFT_INT32", "SWIFT_INT64",
+    "SWIFT_UINT", "SWIFT_UINT8", "SWIFT_UINT16", "SWIFT_UINT32", "SWIFT_UINT64",
+    "SWIFT_FLOAT", "SWIFT_DOUBLE", "SWIFT_FLOAT16", "SWIFT_FLOAT80",
+    "SWIFT_BOOL", "SWIFT_CHARACTER", "SWIFT_STRING",
+    "SWIFT_VOID", "SWIFT_NEVER", "SWIFT_ANY", "SWIFT_ANY_OBJECT",
+    "SwiftOptionalType",
+    "SwiftImplicitlyUnwrappedOptionalType",
+    "SwiftArrayType",
+    "SwiftDictionaryType",
+    "SwiftSetType",
+    "SwiftTupleType",
+    "SwiftFunctionType",
+    "SwiftClosureType",
+    "SwiftProtocolType",
+    "SwiftProtocolCompositionType",
+    "SwiftGenericType",
+    "SwiftTypeParameter",
+    "SwiftMetatypeType",
+    "SwiftExistentialType",
+    "SwiftOpaqueType",
+    "SwiftResultType",
+    "SwiftNamedType",
 ]
