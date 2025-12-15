@@ -8,25 +8,42 @@ and semantic domains.
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        AnankeGrammar                            │
-│  ┌──────────────┐  ┌────────────────────────────────────────┐   │
-│  │ SyntaxGrammar│  │         Domain Constraints             │   │
-│  │ (llguidance) │  │  ┌──────┐ ┌───────┐ ┌───────────────┐  │   │
-│  │              │  │  │Types │ │Imports│ │ControlFlow    │  │   │
-│  │   CFG-based  │  │  └──┬───┘ └──┬────┘ └─────┬─────────┘  │   │
-│  │   masking    │  │     │        │            │            │   │
-│  │   (~50μs)    │  │     └────────+────────────┘            │   │
-│  └──────┬───────┘  │              │                         │   │
-│         │          │    ┌─────────▼─────────┐               │   │
-│         │          │    │  Mask Fusion      │               │   │
-│         └──────────┼────►  (SIMD-optimized) │               │   │
-│                    │    └─────────┬─────────┘               │   │
-│                    └──────────────┼─────────────────────────┘   │
-│                                   ▼                             │
-│                          Final Token Mask                       │
-└─────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│                              AnankeGrammar                                  │
+│                                                                             │
+│  ┌─────────────────┐   ┌─────────────────────────────────────────────────┐ │
+│  │  Syntax Domain  │   │              Constraint Domains                  │ │
+│  │   (llguidance)  │   │                                                  │ │
+│  │                 │   │  ┌─────────┐ ┌─────────┐ ┌───────────────────┐  │ │
+│  │  CFG Parsing    │   │  │  Types  │ │ Imports │ │   ControlFlow     │  │ │
+│  │  JSON Schema    │   │  │ <500μs  │ │ <200μs  │ │     <100μs        │  │ │
+│  │  Regex/EBNF     │   │  └────┬────┘ └────┬────┘ └─────────┬─────────┘  │ │
+│  │    ~50μs        │   │       └───────────┴────────────────┘            │ │
+│  └────────┬────────┘   │                    │                            │ │
+│           │            │       ┌────────────▼────────────┐               │ │
+│           │            │       │   Semantics Domain      │               │ │
+│           │            │       │   (SMT/Z3, optional)    │               │ │
+│           │            │       └────────────┬────────────┘               │ │
+│           │            └────────────────────┼────────────────────────────┘ │
+│           │                                 │                              │
+│           │     ┌───────────────────────────▼────────────────────────────┐│
+│           └─────►          Mask Fusion (Zig SIMD ~50x faster)            ││
+│                 │  Selectivity-ordered · Early termination · Lazy eval   ││
+│                 └───────────────────────────┬────────────────────────────┘│
+│                                             ▼                              │
+│  ┌──────────────────────┐    ┌─────────────────────────────────────────┐  │
+│  │  Checkpoint System   │    │           Final Token Mask              │  │
+│  │  Sparse + O(1) ops   │    │    Boolean tensor for valid tokens      │  │
+│  └──────────────────────┘    └─────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                    Typed Holes System (Hazel)                        │   │
+│  │  Environment capture · Fill-and-resume · Totality guarantees         │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
+
+For detailed architecture documentation, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Key Features
 
@@ -158,6 +175,19 @@ PYTHONPATH="$PWD/python:$PYTHONPATH" python -m pytest \
 PYTHONPATH="$PWD/python:$PYTHONPATH" python -m pytest \
     python/sglang/srt/constrained/ananke/tests/benchmark/ -v
 ```
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [GETTING_STARTED.md](docs/GETTING_STARTED.md) | Quick start and usage guide |
+| [REFERENCE.md](docs/REFERENCE.md) | Complete API reference |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture overview |
+| [ARCHITECTURE_DEEP_DIVE.md](docs/ARCHITECTURE_DEEP_DIVE.md) | Mathematical foundations |
+| [CONTRIBUTING.md](docs/CONTRIBUTING.md) | Development guide |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Deployment options |
+| [CONSTRAINT_SPEC.md](docs/CONSTRAINT_SPEC.md) | Constraint specification format |
+| [LANGUAGE_IMPLEMENTATION_STATUS.md](docs/LANGUAGE_IMPLEMENTATION_STATUS.md) | Language support details |
 
 ## References
 

@@ -960,11 +960,11 @@ def unify(type1: Type, type2: Type) -> Optional[Substitution]:
 |----------|-------------|-------------------|--------|
 | Python | Full | pip/stdlib | Complete |
 | TypeScript | Full | npm/stdlib | Complete |
-| Go | Partial | go modules | Partial |
-| Rust | Partial | cargo | Partial |
-| Kotlin | Partial | maven/gradle | Partial |
-| Swift | Partial | SPM | Partial |
-| Zig | Partial | build.zig | Partial |
+| Go | Full | go modules | Complete |
+| Rust | Full | cargo | Complete |
+| Kotlin | Full | maven/gradle | Complete |
+| Swift | Full | SPM | Complete |
+| Zig | Full | build.zig | Complete |
 
 ### Domain Enable/Disable
 

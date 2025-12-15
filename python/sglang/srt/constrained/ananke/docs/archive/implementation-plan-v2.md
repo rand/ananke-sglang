@@ -1,3 +1,21 @@
+> ---
+> **STATUS: HISTORICAL DOCUMENT - IMPLEMENTATION COMPLETE**
+> 
+> This is the comprehensive implementation plan (v2.0) for integrating Ananke into SGLang.
+> All features described in this plan have been implemented, including:
+> - All 5 constraint domains (Syntax, Types, Imports, ControlFlow, Semantics)
+> - Full multi-language support (7 languages)
+> - Incremental bidirectional type checking
+> - Typed holes based on Hazel research
+> 
+> For current documentation, see:
+> - [ARCHITECTURE.md](../ARCHITECTURE.md) - System overview
+> - [ARCHITECTURE_DEEP_DIVE.md](../ARCHITECTURE_DEEP_DIVE.md) - Technical deep dive
+> 
+> This document is preserved for historical reference.
+> 
+> ---
+> 
 # Ananke: Compositional Constraint System for Verified Code Generation
 ## Comprehensive Implementation Plan for Claude Code
 

@@ -1,3 +1,15 @@
+> ---
+> **STATUS: HISTORICAL DOCUMENT**
+> 
+> This is the original design document (v0.1) for the Ananke system.
+> The system has been fully implemented. For current architecture documentation, see:
+> - [ARCHITECTURE.md](../ARCHITECTURE.md) - System overview
+> - [ARCHITECTURE_DEEP_DIVE.md](../ARCHITECTURE_DEEP_DIVE.md) - Mathematical foundations
+> 
+> This document is preserved for historical reference and design rationale.
+> 
+> ---
+> 
 # Ananke: A Compositional Constraint System for Verified Code Generation
 
 ## Design Document v0.1

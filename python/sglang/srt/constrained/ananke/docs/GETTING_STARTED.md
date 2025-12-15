@@ -383,11 +383,11 @@ Ananke supports multiple programming languages:
 |----------|-------------|-------------------|--------------|
 | Python | Full | pip/stdlib | Yes |
 | TypeScript | Full | npm/stdlib | Yes |
-| Go | Partial | go modules | Partial |
-| Rust | Partial | cargo | Partial |
-| Kotlin | Partial | maven/gradle | Partial |
-| Swift | Partial | SPM | Partial |
-| Zig | Partial | build.zig | Partial |
+| Go | Full | go modules | Yes |
+| Rust | Full | cargo | Yes |
+| Kotlin | Full | maven/gradle | Yes |
+| Swift | Full | SPM | Yes |
+| Zig | Full | build.zig | Yes |
 
 ```python
 backend = AnankeBackend(
