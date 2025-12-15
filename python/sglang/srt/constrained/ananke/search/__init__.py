@@ -47,12 +47,25 @@ from search.sudoku_filler import (
     SudokuStyleHoleFiller,
     FillResult,
     FillStrategy,
+    FillCandidate,
     HoledCode,
+    FillGenerator,
+    ConstraintChecker,
+    fill_with_mcv_heuristic,
 )
 from search.trajectory import (
     Trajectory,
     TrajectoryNode,
     TrajectoryTrie,
+    create_trajectory_trie,
+)
+from search.generators import (
+    TypeAwareFillGenerator,
+    UnifiedConstraintChecker,
+    TypeConstraintInferencer,
+    create_fill_generator,
+    create_constraint_checker,
+    create_constraint_inferencer,
 )
 
 __all__ = [
@@ -60,9 +73,21 @@ __all__ = [
     "SudokuStyleHoleFiller",
     "FillResult",
     "FillStrategy",
+    "FillCandidate",
     "HoledCode",
+    "FillGenerator",
+    "ConstraintChecker",
+    "fill_with_mcv_heuristic",
     # Trajectory tracking
     "Trajectory",
     "TrajectoryNode",
     "TrajectoryTrie",
+    "create_trajectory_trie",
+    # Concrete implementations
+    "TypeAwareFillGenerator",
+    "UnifiedConstraintChecker",
+    "TypeConstraintInferencer",
+    "create_fill_generator",
+    "create_constraint_checker",
+    "create_constraint_inferencer",
 ]

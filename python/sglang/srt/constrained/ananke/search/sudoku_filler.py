@@ -825,8 +825,13 @@ class SudokuStyleHoleFiller:
     ) -> Optional[Any]:
         """Infer constraint for dependent hole from a fill.
 
-        This is a placeholder for actual constraint inference logic.
-        Real implementation would use type inference and constraint solving.
+        Uses TypeConstraintInferencer to analyze the relationship between
+        filled and dependent holes and determine appropriate constraints.
+
+        The inference is based on:
+        1. The type of the fill value (literals, expressions)
+        2. The relationship between holes (return type, argument, etc.)
+        3. The expected types from hole constraints
 
         Args:
             filled_hole: The hole that was filled
@@ -834,11 +839,24 @@ class SudokuStyleHoleFiller:
             dependent_hole: The dependent hole to constrain
 
         Returns:
-            Inferred constraint or None
+            Inferred constraint (TypeConstraint) or None if no constraint inferred
         """
-        # Placeholder: real implementation would analyze fill and dependencies
-        # to infer type constraints, value constraints, etc.
-        return None
+        if filled_hole is None:
+            return None
+
+        # Use TypeConstraintInferencer for real constraint inference
+        try:
+            from .generators import TypeConstraintInferencer
+            inferencer = TypeConstraintInferencer()
+            return inferencer.infer_constraint_from_fill(
+                filled_hole, fill_value, dependent_hole
+            )
+        except ImportError:
+            logger.debug("TypeConstraintInferencer not available, skipping inference")
+            return None
+        except Exception as e:
+            logger.debug(f"Constraint inference failed: {e}")
+            return None
 
     def valid_fills(
         self,
