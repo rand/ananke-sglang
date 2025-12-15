@@ -25,6 +25,14 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Dict, FrozenSet, Iterator, List, Optional, Set, Tuple
 
+# Try to use immutables for efficient persistent maps
+try:
+    from immutables import Map as ImmutableMap
+
+    HAS_IMMUTABLES = True
+except ImportError:
+    HAS_IMMUTABLES = False
+
 from .constraint import CodePoint
 
 
@@ -284,6 +292,340 @@ class CFGSketch:
 
     def __repr__(self) -> str:
         return f"CFGSketch(blocks={self.block_count()}, edges={self.edge_count()})"
+
+
+@dataclass(frozen=True, slots=True)
+class ImmutableBasicBlock:
+    """Immutable basic block for structural sharing.
+
+    Unlike BasicBlock, this class is completely immutable and hashable,
+    enabling O(1) checkpointing via reference sharing.
+
+    Attributes:
+        id: Unique identifier for this block
+        kind: Description of what this block represents
+        statements: Tuple of statement descriptions (immutable)
+        predecessors: FrozenSet of predecessor block IDs
+        successors: FrozenSet of successor block IDs
+        is_entry: True if this is an entry block
+        is_exit: True if this is an exit block
+        is_loop_header: True if this is a loop header
+        source_lines: Optional source line range
+    """
+
+    id: str
+    kind: str = "block"
+    statements: Tuple[str, ...] = ()
+    predecessors: FrozenSet[str] = frozenset()
+    successors: FrozenSet[str] = frozenset()
+    is_entry: bool = False
+    is_exit: bool = False
+    is_loop_header: bool = False
+    source_lines: Optional[Tuple[int, int]] = None
+
+    def with_successor(self, successor_id: str) -> ImmutableBasicBlock:
+        """Return a new block with an added successor."""
+        return ImmutableBasicBlock(
+            id=self.id,
+            kind=self.kind,
+            statements=self.statements,
+            predecessors=self.predecessors,
+            successors=self.successors | {successor_id},
+            is_entry=self.is_entry,
+            is_exit=self.is_exit,
+            is_loop_header=self.is_loop_header,
+            source_lines=self.source_lines,
+        )
+
+    def with_predecessor(self, predecessor_id: str) -> ImmutableBasicBlock:
+        """Return a new block with an added predecessor."""
+        return ImmutableBasicBlock(
+            id=self.id,
+            kind=self.kind,
+            statements=self.statements,
+            predecessors=self.predecessors | {predecessor_id},
+            successors=self.successors,
+            is_entry=self.is_entry,
+            is_exit=self.is_exit,
+            is_loop_header=self.is_loop_header,
+            source_lines=self.source_lines,
+        )
+
+    def with_statement(self, stmt: str) -> ImmutableBasicBlock:
+        """Return a new block with an added statement."""
+        return ImmutableBasicBlock(
+            id=self.id,
+            kind=self.kind,
+            statements=self.statements + (stmt,),
+            predecessors=self.predecessors,
+            successors=self.successors,
+            is_entry=self.is_entry,
+            is_exit=self.is_exit,
+            is_loop_header=self.is_loop_header,
+            source_lines=self.source_lines,
+        )
+
+    def to_code_point(self) -> CodePoint:
+        """Convert to a CodePoint for constraint tracking."""
+        line = self.source_lines[0] if self.source_lines else None
+        return CodePoint(label=self.id, kind=self.kind, line=line)
+
+    def to_mutable(self) -> BasicBlock:
+        """Convert to a mutable BasicBlock."""
+        return BasicBlock(
+            id=self.id,
+            kind=self.kind,
+            statements=list(self.statements),
+            predecessors=set(self.predecessors),
+            successors=set(self.successors),
+            is_entry=self.is_entry,
+            is_exit=self.is_exit,
+            is_loop_header=self.is_loop_header,
+            source_lines=self.source_lines,
+        )
+
+    @staticmethod
+    def from_mutable(block: BasicBlock) -> ImmutableBasicBlock:
+        """Create from a mutable BasicBlock."""
+        return ImmutableBasicBlock(
+            id=block.id,
+            kind=block.kind,
+            statements=tuple(block.statements),
+            predecessors=frozenset(block.predecessors),
+            successors=frozenset(block.successors),
+            is_entry=block.is_entry,
+            is_exit=block.is_exit,
+            is_loop_header=block.is_loop_header,
+            source_lines=block.source_lines,
+        )
+
+
+class ImmutableCFGSketch:
+    """Immutable CFG sketch with structural sharing.
+
+    This class provides O(1) checkpointing by using:
+    - immutables.Map for blocks (structural sharing on updates)
+    - frozenset for edges
+    - Reference equality for snapshots
+
+    All modification methods return new instances, sharing
+    unmodified portions with the original.
+
+    Example:
+        >>> cfg = ImmutableCFGSketch()
+        >>> cfg2 = cfg.add_block(block)  # O(log n) copy, shares most data
+        >>> checkpoint = cfg2  # O(1) - just reference copy
+
+    Attributes:
+        _blocks: Immutable map from block ID to ImmutableBasicBlock
+        _edges: Frozen set of CFGEdge instances
+        _entry_id: ID of the entry block (or None)
+        _exit_ids: Frozen set of exit block IDs
+    """
+
+    __slots__ = ("_blocks", "_edges", "_entry_id", "_exit_ids")
+
+    def __init__(
+        self,
+        blocks: Optional[Dict[str, ImmutableBasicBlock]] = None,
+        edges: Optional[FrozenSet[CFGEdge]] = None,
+        entry_id: Optional[str] = None,
+        exit_ids: Optional[FrozenSet[str]] = None,
+    ):
+        """Initialize an immutable CFG sketch.
+
+        Args:
+            blocks: Initial blocks (will be converted to immutable map)
+            edges: Initial edges (will be converted to frozenset)
+            entry_id: ID of entry block
+            exit_ids: IDs of exit blocks
+        """
+        if HAS_IMMUTABLES:
+            self._blocks: ImmutableMap[str, ImmutableBasicBlock] = (
+                ImmutableMap(blocks) if blocks else ImmutableMap()
+            )
+        else:
+            # Fallback: use a regular dict (less efficient but functional)
+            self._blocks = dict(blocks) if blocks else {}
+
+        self._edges: FrozenSet[CFGEdge] = edges if edges is not None else frozenset()
+        self._entry_id: Optional[str] = entry_id
+        self._exit_ids: FrozenSet[str] = exit_ids if exit_ids is not None else frozenset()
+
+    def add_block(self, block: ImmutableBasicBlock) -> ImmutableCFGSketch:
+        """Return a new CFG with the block added.
+
+        This is O(log n) due to structural sharing.
+
+        Args:
+            block: The block to add
+
+        Returns:
+            New ImmutableCFGSketch with the block added
+        """
+        if HAS_IMMUTABLES:
+            new_blocks = self._blocks.set(block.id, block)
+        else:
+            new_blocks = dict(self._blocks)
+            new_blocks[block.id] = block
+
+        new_entry = block.id if block.is_entry else self._entry_id
+        new_exits = self._exit_ids | {block.id} if block.is_exit else self._exit_ids
+
+        result = ImmutableCFGSketch.__new__(ImmutableCFGSketch)
+        result._blocks = new_blocks
+        result._edges = self._edges
+        result._entry_id = new_entry
+        result._exit_ids = new_exits
+        return result
+
+    def add_edge(self, edge: CFGEdge) -> ImmutableCFGSketch:
+        """Return a new CFG with the edge added.
+
+        Also updates predecessor/successor sets in affected blocks.
+
+        Args:
+            edge: The edge to add
+
+        Returns:
+            New ImmutableCFGSketch with the edge added
+        """
+        new_edges = self._edges | {edge}
+
+        # Update source block's successors
+        new_blocks = self._blocks
+        if edge.source in new_blocks:
+            source_block = new_blocks[edge.source]
+            new_source = source_block.with_successor(edge.target)
+            if HAS_IMMUTABLES:
+                new_blocks = new_blocks.set(edge.source, new_source)
+            else:
+                new_blocks = dict(new_blocks)
+                new_blocks[edge.source] = new_source
+
+        # Update target block's predecessors
+        if edge.target in new_blocks:
+            target_block = new_blocks[edge.target]
+            new_target = target_block.with_predecessor(edge.source)
+            if HAS_IMMUTABLES:
+                new_blocks = new_blocks.set(edge.target, new_target)
+            else:
+                if not isinstance(new_blocks, dict):
+                    new_blocks = dict(new_blocks)
+                new_blocks[edge.target] = new_target
+
+        result = ImmutableCFGSketch.__new__(ImmutableCFGSketch)
+        result._blocks = new_blocks
+        result._edges = new_edges
+        result._entry_id = self._entry_id
+        result._exit_ids = self._exit_ids
+        return result
+
+    @property
+    def blocks(self) -> Dict[str, ImmutableBasicBlock]:
+        """Get blocks as a dictionary (for compatibility)."""
+        return dict(self._blocks)
+
+    @property
+    def edges(self) -> FrozenSet[CFGEdge]:
+        """Get edges."""
+        return self._edges
+
+    @property
+    def entry_id(self) -> Optional[str]:
+        """Get entry block ID."""
+        return self._entry_id
+
+    @property
+    def exit_ids(self) -> FrozenSet[str]:
+        """Get exit block IDs."""
+        return self._exit_ids
+
+    def get_block(self, block_id: str) -> Optional[ImmutableBasicBlock]:
+        """Get a block by ID."""
+        return self._blocks.get(block_id)
+
+    def get_entry(self) -> Optional[ImmutableBasicBlock]:
+        """Get the entry block."""
+        if self._entry_id:
+            return self._blocks.get(self._entry_id)
+        return None
+
+    def get_exits(self) -> List[ImmutableBasicBlock]:
+        """Get all exit blocks."""
+        return [self._blocks[eid] for eid in self._exit_ids if eid in self._blocks]
+
+    def get_successors(self, block_id: str) -> List[ImmutableBasicBlock]:
+        """Get successor blocks."""
+        block = self._blocks.get(block_id)
+        if not block:
+            return []
+        return [self._blocks[sid] for sid in block.successors if sid in self._blocks]
+
+    def get_predecessors(self, block_id: str) -> List[ImmutableBasicBlock]:
+        """Get predecessor blocks."""
+        block = self._blocks.get(block_id)
+        if not block:
+            return []
+        return [self._blocks[pid] for pid in block.predecessors if pid in self._blocks]
+
+    def get_outgoing_edges(self, block_id: str) -> List[CFGEdge]:
+        """Get outgoing edges from a block."""
+        return [e for e in self._edges if e.source == block_id]
+
+    def get_incoming_edges(self, block_id: str) -> List[CFGEdge]:
+        """Get incoming edges to a block."""
+        return [e for e in self._edges if e.target == block_id]
+
+    def get_loop_headers(self) -> List[ImmutableBasicBlock]:
+        """Get all loop header blocks."""
+        return [b for b in self._blocks.values() if b.is_loop_header]
+
+    def get_back_edges(self) -> List[CFGEdge]:
+        """Get all back edges."""
+        return [e for e in self._edges if e.kind == EdgeKind.LOOP_BACK]
+
+    def block_count(self) -> int:
+        """Get the number of blocks."""
+        return len(self._blocks)
+
+    def edge_count(self) -> int:
+        """Get the number of edges."""
+        return len(self._edges)
+
+    def iter_blocks(self) -> Iterator[ImmutableBasicBlock]:
+        """Iterate over all blocks."""
+        return iter(self._blocks.values())
+
+    def iter_edges(self) -> Iterator[CFGEdge]:
+        """Iterate over all edges."""
+        return iter(self._edges)
+
+    def to_code_points(self) -> FrozenSet[CodePoint]:
+        """Convert all blocks to CodePoints."""
+        return frozenset(b.to_code_point() for b in self._blocks.values())
+
+    def to_mutable(self) -> CFGSketch:
+        """Convert to a mutable CFGSketch."""
+        return CFGSketch(
+            blocks={k: v.to_mutable() for k, v in self._blocks.items()},
+            edges=set(self._edges),
+            entry_id=self._entry_id,
+            exit_ids=set(self._exit_ids),
+        )
+
+    @staticmethod
+    def from_mutable(cfg: CFGSketch) -> ImmutableCFGSketch:
+        """Create from a mutable CFGSketch."""
+        return ImmutableCFGSketch(
+            blocks={k: ImmutableBasicBlock.from_mutable(v) for k, v in cfg.blocks.items()},
+            edges=frozenset(cfg.edges),
+            entry_id=cfg.entry_id,
+            exit_ids=frozenset(cfg.exit_ids),
+        )
+
+    def __repr__(self) -> str:
+        return f"ImmutableCFGSketch(blocks={self.block_count()}, edges={self.edge_count()})"
 
 
 class CFGBuilder:
