@@ -46,6 +46,7 @@ from sglang.srt.constrained.base_grammar_backend import (
 
 if TYPE_CHECKING:
     from ..spec.constraint_spec import ConstraintSpec
+    from ..adaptive.intensity import ConstraintIntensity
 
 # Support both relative imports (when used as subpackage) and absolute imports (standalone testing)
 try:
@@ -57,6 +58,12 @@ try:
     from ..domains.imports.domain import ImportDomain
     from ..domains.controlflow.domain import ControlFlowDomain
     from ..domains.semantics.domain import SemanticDomain
+    from ..adaptive.intensity import (
+        ConstraintIntensity,
+        TaskComplexityAssessor,
+        IntensityConfig,
+        domains_for_intensity,
+    )
 except ImportError:
     from backend.grammar import AnankeGrammar
     from core.constraint import TOP, BOTTOM
@@ -66,6 +73,12 @@ except ImportError:
     from domains.imports.domain import ImportDomain
     from domains.controlflow.domain import ControlFlowDomain
     from domains.semantics.domain import SemanticDomain
+    from adaptive.intensity import (
+        ConstraintIntensity,
+        TaskComplexityAssessor,
+        IntensityConfig,
+        domains_for_intensity,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +114,8 @@ class AnankeBackend(BaseGrammarBackend):
         language: str = "python",
         enabled_domains: Optional[Set[str]] = None,
         max_rollback_tokens: int = 200,
+        default_intensity: Optional[ConstraintIntensity] = None,
+        intensity_config: Optional[IntensityConfig] = None,
     ):
         """Initialize AnankeBackend.
 
@@ -113,6 +128,8 @@ class AnankeBackend(BaseGrammarBackend):
             language: Default programming language
             enabled_domains: Set of domain names to enable (default: all)
             max_rollback_tokens: Maximum tokens for rollback
+            default_intensity: Default constraint intensity (None = auto-assess)
+            intensity_config: Configuration for task complexity assessment
         """
         super().__init__()
 
@@ -123,6 +140,12 @@ class AnankeBackend(BaseGrammarBackend):
         self.whitespace_pattern = whitespace_pattern
         self.language = language
         self.max_rollback_tokens = max_rollback_tokens
+        self.default_intensity = default_intensity
+
+        # Task complexity assessor for adaptive intensity
+        self._complexity_assessor = TaskComplexityAssessor(
+            config=intensity_config or IntensityConfig()
+        )
 
         # Initialize syntax backend (llguidance)
         self.syntax_backend = self._create_syntax_backend()
@@ -266,12 +289,18 @@ class AnankeBackend(BaseGrammarBackend):
         self,
         syntax_grammar: Optional[BaseGrammarObject],
         constraint_spec: Optional["ConstraintSpec"] = None,
+        prompt: Optional[str] = None,
+        expected_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
     ) -> AnankeGrammar:
         """Create an AnankeGrammar instance with the given syntax grammar.
 
         Args:
             syntax_grammar: Underlying syntax grammar (llguidance)
             constraint_spec: Optional rich constraint specification
+            prompt: Generation prompt for complexity assessment
+            expected_tokens: Expected token count for complexity assessment
+            temperature: Sampling temperature for complexity assessment
 
         Returns:
             Configured AnankeGrammar instance
@@ -281,9 +310,21 @@ class AnankeBackend(BaseGrammarBackend):
         if constraint_spec is not None and constraint_spec.language:
             language = constraint_spec.language
 
+        # Determine constraint intensity
+        intensity = self._determine_intensity(
+            constraint_spec=constraint_spec,
+            prompt=prompt,
+            expected_tokens=expected_tokens,
+            temperature=temperature,
+            language=language,
+        )
+
+        # Select domains based on intensity
+        effective_domains = self._select_domains_for_intensity(intensity, constraint_spec)
+
         return AnankeGrammar(
             syntax_grammar=syntax_grammar,
-            domains=self.domains,
+            domains=effective_domains,
             constraint=UNIFIED_TOP,
             vocab_size=self.vocab_size,
             device="cuda",
@@ -291,7 +332,92 @@ class AnankeBackend(BaseGrammarBackend):
             language=language,
             max_rollback_tokens=self.max_rollback_tokens,
             constraint_spec=constraint_spec,
+            intensity=intensity,
         )
+
+    def _determine_intensity(
+        self,
+        constraint_spec: Optional["ConstraintSpec"] = None,
+        prompt: Optional[str] = None,
+        expected_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        language: Optional[str] = None,
+    ) -> ConstraintIntensity:
+        """Determine effective constraint intensity for this request.
+
+        Priority order:
+        1. Explicit intensity in constraint_spec
+        2. Backend default intensity (if set)
+        3. Auto-assessment via TaskComplexityAssessor
+
+        Args:
+            constraint_spec: Constraint specification (may contain explicit intensity)
+            prompt: Generation prompt for assessment
+            expected_tokens: Expected token count
+            temperature: Sampling temperature
+            language: Target language
+
+        Returns:
+            Determined ConstraintIntensity level
+        """
+        # Check for explicit intensity in spec
+        if constraint_spec is not None:
+            explicit_intensity = constraint_spec.get_intensity()
+            if explicit_intensity is not None:
+                return explicit_intensity
+
+        # Use backend default if set
+        if self.default_intensity is not None:
+            return self.default_intensity
+
+        # Auto-assess using complexity assessor
+        return self._complexity_assessor.assess(
+            prompt=prompt or "",
+            expected_tokens=expected_tokens,
+            temperature=temperature,
+            language=language,
+        )
+
+    def _select_domains_for_intensity(
+        self,
+        intensity: ConstraintIntensity,
+        constraint_spec: Optional["ConstraintSpec"] = None,
+    ) -> Dict[str, ConstraintDomain]:
+        """Select domains to enable based on intensity level.
+
+        The intensity level determines the base set of domains. The constraint
+        spec can further restrict (but not expand) this set.
+
+        Args:
+            intensity: Determined constraint intensity level
+            constraint_spec: Optional constraint specification
+
+        Returns:
+            Dictionary of domain name -> domain instance
+        """
+        # Get domains for intensity level
+        intensity_domains = domains_for_intensity(intensity)
+
+        # Intersect with backend's enabled domains
+        effective_domain_names = intensity_domains & self.enabled_domains
+
+        # Apply spec overrides (restriction only)
+        if constraint_spec is not None:
+            if constraint_spec.enabled_domains is not None:
+                effective_domain_names = effective_domain_names & constraint_spec.enabled_domains
+            if constraint_spec.disabled_domains is not None:
+                effective_domain_names = effective_domain_names - constraint_spec.disabled_domains
+
+        # Return subset of self.domains matching effective names
+        return {
+            name: domain
+            for name, domain in self.domains.items()
+            if name in effective_domain_names
+        }
+
+    def get_intensity_stats(self) -> Dict[str, int]:
+        """Get intensity assessment statistics for monitoring."""
+        return self._complexity_assessor.get_stats()
 
     def dispatch_with_spec(
         self,
@@ -677,6 +803,22 @@ def create_ananke_backend(
             )
             enabled_domains = enabled_domains & valid_domains
 
+    # Parse constraint intensity setting
+    default_intensity: Optional[ConstraintIntensity] = None
+    intensity_str = getattr(server_args, "ananke_intensity", None)
+    if intensity_str and intensity_str.lower() != "auto":
+        default_intensity = ConstraintIntensity.from_string(intensity_str)
+
+    # Parse intensity config overrides
+    intensity_config: Optional[IntensityConfig] = None
+    min_tokens_types = getattr(server_args, "ananke_min_tokens_for_types", None)
+    min_tokens_full = getattr(server_args, "ananke_min_tokens_for_full", None)
+    if min_tokens_types is not None or min_tokens_full is not None:
+        intensity_config = IntensityConfig(
+            min_tokens_for_types=min_tokens_types or 20,
+            min_tokens_for_full=min_tokens_full or 100,
+        )
+
     return AnankeBackend(
         tokenizer=tokenizer,
         vocab_size=vocab_size,
@@ -690,6 +832,8 @@ def create_ananke_backend(
         language=getattr(server_args, "ananke_language", "python"),
         enabled_domains=enabled_domains,
         max_rollback_tokens=getattr(server_args, "ananke_max_rollback_tokens", 200),
+        default_intensity=default_intensity,
+        intensity_config=intensity_config,
     )
 
 

@@ -38,6 +38,7 @@ import json
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
+    TYPE_CHECKING,
     Any,
     Dict,
     FrozenSet,
@@ -47,6 +48,9 @@ from typing import (
     Tuple,
     Union,
 )
+
+if TYPE_CHECKING:
+    from ..adaptive.intensity import ConstraintIntensity
 
 
 # =============================================================================
@@ -720,6 +724,12 @@ class ConstraintSpec:
     disabled_domains: Optional[Set[str]] = None
     domain_configs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
+    # === Adaptive Intensity ===
+    # Constraint intensity level (NONE, SYNTAX_ONLY, STANDARD, FULL, EXHAUSTIVE)
+    # When set to "auto", intensity is determined by TaskComplexityAssessor
+    intensity: Optional[str] = None  # String to avoid circular import; parsed at runtime
+    intensity_config: Dict[str, Any] = field(default_factory=dict)  # IntensityConfig overrides
+
     # === Cache Control ===
     cache_scope: CacheScope = CacheScope.SYNTAX_ONLY
     context_hash: Optional[str] = None
@@ -733,6 +743,24 @@ class ConstraintSpec:
         return any(
             [self.json_schema, self.regex, self.ebnf, self.structural_tag]
         )
+
+    def get_intensity(self) -> Optional["ConstraintIntensity"]:
+        """Get parsed ConstraintIntensity from intensity string.
+
+        Returns:
+            Parsed ConstraintIntensity or None if not set or "auto"
+        """
+        if self.intensity is None or self.intensity.lower() == "auto":
+            return None
+        try:
+            from ..adaptive.intensity import ConstraintIntensity
+            return ConstraintIntensity.from_string(self.intensity)
+        except ImportError:
+            return None
+
+    def is_auto_intensity(self) -> bool:
+        """Check if intensity should be auto-determined."""
+        return self.intensity is None or self.intensity.lower() == "auto"
 
     def get_syntax_constraint_type(self) -> Optional[str]:
         """Get the type of syntax constraint specified."""
@@ -870,6 +898,12 @@ class ConstraintSpec:
         if self.domain_configs:
             d["domain_configs"] = self.domain_configs
 
+        # Adaptive intensity
+        if self.intensity is not None:
+            d["intensity"] = self.intensity
+        if self.intensity_config:
+            d["intensity_config"] = self.intensity_config
+
         # Cache control
         if self.cache_scope != CacheScope.SYNTAX_ONLY:
             d["cache_scope"] = str(self.cache_scope)
@@ -942,6 +976,9 @@ class ConstraintSpec:
                 set(d["disabled_domains"]) if "disabled_domains" in d else None
             ),
             domain_configs=d.get("domain_configs", {}),
+            # Adaptive intensity
+            intensity=d.get("intensity"),
+            intensity_config=d.get("intensity_config", {}),
             # Cache control
             cache_scope=CacheScope.from_string(d.get("cache_scope", "syntax_only")),
             context_hash=d.get("context_hash"),

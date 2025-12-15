@@ -77,6 +77,7 @@ except ImportError:
 if TYPE_CHECKING:
     from sglang.srt.constrained.llguidance_backend import GuidanceGrammar
     from ..spec.constraint_spec import ConstraintSpec
+    from ..adaptive.intensity import ConstraintIntensity
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ class AnankeGrammar(BaseGrammarObject):
         checkpoint_interval: int = 1,
         mask_pool_size: int = 8,
         constraint_spec: Optional["ConstraintSpec"] = None,
+        intensity: Optional["ConstraintIntensity"] = None,
     ):
         """Initialize AnankeGrammar.
 
@@ -134,6 +136,8 @@ class AnankeGrammar(BaseGrammarObject):
             constraint_spec: Rich constraint specification (optional).
                 If provided, enables per-request language configuration,
                 type context, import context, and semantic constraints.
+            intensity: Constraint intensity level for this grammar.
+                Determines which domains are active for mask computation.
         """
         super().__init__()
         self.syntax_grammar = syntax_grammar
@@ -145,6 +149,7 @@ class AnankeGrammar(BaseGrammarObject):
         self.language = language
         self._mask_pool_size = mask_pool_size
         self.constraint_spec = constraint_spec
+        self.intensity = intensity
 
         # Pre-allocated mask tensor pool to avoid per-token CUDA allocations
         self._mask_pool: Optional[MaskPool] = None
@@ -488,6 +493,7 @@ class AnankeGrammar(BaseGrammarObject):
             checkpoint_interval=self._checkpoint_interval,
             mask_pool_size=self._mask_pool_size,
             constraint_spec=self.constraint_spec,
+            intensity=self.intensity,
         )
 
     def inject_context(self, spec: "ConstraintSpec") -> None:
