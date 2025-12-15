@@ -11,7 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Language-specific type systems for Python, Zig, Rust, and more.
+"""Language-specific type systems for Python, Zig, Rust, TypeScript, and more.
 
 This package provides type system implementations for multiple programming
 languages, enabling language-aware type checking during code generation.
@@ -20,9 +20,9 @@ Currently supported:
 - Python (PEP 484 compatible, mypy/pyright semantics)
 - Zig (with full comptime support)
 - Rust (with ownership and lifetime support)
+- TypeScript (with structural typing)
 
 Planned:
-- TypeScript
 - Go
 
 Usage:
@@ -104,6 +104,33 @@ from domains.types.languages.rust import (
     RustImplTraitType,
 )
 
+from domains.types.languages.typescript import (
+    TypeScriptTypeSystem,
+    # Primitives
+    TS_STRING, TS_NUMBER, TS_BOOLEAN, TS_BIGINT, TS_SYMBOL,
+    TS_UNDEFINED, TS_NULL, TS_VOID, TS_OBJECT, TS_UNKNOWN,
+    TS_ANY, TS_NEVER,
+    # Helper types
+    TSParameter,
+    # Compound types
+    TSLiteralType,
+    TSArrayType,
+    TSTupleType,
+    TSObjectType,
+    TSFunctionType,
+    TSTypeParameter,
+    TSUnionType,
+    TSIntersectionType,
+    TSConditionalType,
+    TSMappedType,
+    TSIndexedAccessType,
+    TSKeyofType,
+    TSTypeofType,
+    TSTemplateLiteralType,
+    TSTypeReference,
+    TSInferType,
+)
+
 
 __all__ = [
     # Base
@@ -155,4 +182,26 @@ __all__ = [
     "RustFunctionType",
     "RustDynTraitType",
     "RustImplTraitType",
+    # TypeScript
+    "TypeScriptTypeSystem",
+    "TS_STRING", "TS_NUMBER", "TS_BOOLEAN", "TS_BIGINT", "TS_SYMBOL",
+    "TS_UNDEFINED", "TS_NULL", "TS_VOID", "TS_OBJECT", "TS_UNKNOWN",
+    "TS_ANY", "TS_NEVER",
+    "TSParameter",
+    "TSLiteralType",
+    "TSArrayType",
+    "TSTupleType",
+    "TSObjectType",
+    "TSFunctionType",
+    "TSTypeParameter",
+    "TSUnionType",
+    "TSIntersectionType",
+    "TSConditionalType",
+    "TSMappedType",
+    "TSIndexedAccessType",
+    "TSKeyofType",
+    "TSTypeofType",
+    "TSTemplateLiteralType",
+    "TSTypeReference",
+    "TSInferType",
 ]

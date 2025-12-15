@@ -52,6 +52,15 @@ from .rust import (
     parse_cargo_toml,
     create_rust_resolver,
 )
+from .typescript import (
+    TypeScriptImportResolver,
+    NODE_BUILTIN_MODULES,
+    POPULAR_NPM_PACKAGES,
+    parse_package_json,
+    parse_tsconfig,
+    extract_typescript_exports,
+    create_typescript_resolver,
+)
 
 __all__ = [
     # Base types
@@ -80,4 +89,12 @@ __all__ = [
     "RUST_POPULAR_CRATES",
     "parse_cargo_toml",
     "create_rust_resolver",
+    # TypeScript resolver
+    "TypeScriptImportResolver",
+    "NODE_BUILTIN_MODULES",
+    "POPULAR_NPM_PACKAGES",
+    "parse_package_json",
+    "parse_tsconfig",
+    "extract_typescript_exports",
+    "create_typescript_resolver",
 ]

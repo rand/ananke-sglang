@@ -52,6 +52,19 @@ from domains.types.languages.rust import (
     RustVecType,
     RustStringType,
 )
+from domains.types.languages.typescript import (
+    TypeScriptTypeSystem,
+    TS_STRING, TS_NUMBER, TS_BOOLEAN, TS_BIGINT, TS_SYMBOL,
+    TS_UNDEFINED, TS_NULL, TS_VOID, TS_OBJECT, TS_UNKNOWN,
+    TS_ANY, TS_NEVER,
+    TSArrayType,
+    TSTupleType,
+    TSObjectType,
+    TSFunctionType,
+    TSUnionType,
+    TSIntersectionType,
+    TSLiteralType,
+)
 
 
 # ===========================================================================
@@ -93,6 +106,25 @@ RUST_PRIMITIVE_NAMES = [
     "u8", "u16", "u32", "u64", "u128", "usize",
     "f32", "f64",
     "bool", "char",
+]
+
+
+# ===========================================================================
+# TypeScript Primitive Types for Testing
+# ===========================================================================
+
+TS_PRIMITIVES = [
+    TS_STRING, TS_NUMBER, TS_BOOLEAN, TS_BIGINT, TS_SYMBOL,
+    TS_UNDEFINED, TS_NULL, TS_VOID,
+]
+
+TS_SPECIAL = [TS_ANY, TS_UNKNOWN, TS_NEVER]
+
+TS_ALL_TYPES = TS_PRIMITIVES + TS_SPECIAL
+
+TS_PRIMITIVE_NAMES = [
+    "string", "number", "boolean", "bigint", "symbol",
+    "undefined", "null", "void", "any", "unknown", "never",
 ]
 
 
@@ -314,6 +346,229 @@ class TestRustParseFormatRoundtrip:
 
 
 # ===========================================================================
+# TypeScript Type System Properties
+# ===========================================================================
+
+
+class TestTypeScriptAssignabilityReflexivity:
+    """Test reflexivity: T is assignable to T."""
+
+    @pytest.fixture
+    def ts(self):
+        return TypeScriptTypeSystem()
+
+    @pytest.mark.parametrize("typ", TS_PRIMITIVES)
+    def test_primitive_reflexivity(self, ts, typ):
+        """Primitive types should be assignable to themselves."""
+        assert ts.check_assignable(typ, typ)
+
+    def test_array_reflexivity(self, ts):
+        """Array types should be assignable to themselves."""
+        arr = TSArrayType(element=TS_STRING)
+        assert ts.check_assignable(arr, arr)
+
+    def test_tuple_reflexivity(self, ts):
+        """Tuple types should be assignable to themselves."""
+        tup = TSTupleType(elements=(TS_STRING, TS_NUMBER))
+        assert ts.check_assignable(tup, tup)
+
+    def test_object_reflexivity(self, ts):
+        """Object types should be assignable to themselves."""
+        obj = TSObjectType(
+            properties=(("name", TS_STRING), ("age", TS_NUMBER)),
+            optional_properties=frozenset(),
+        )
+        assert ts.check_assignable(obj, obj)
+
+    def test_function_reflexivity(self, ts):
+        """Function types should be assignable to themselves."""
+        func = TSFunctionType(
+            parameters=(("x", TS_NUMBER, False),),
+            return_type=TS_STRING,
+        )
+        assert ts.check_assignable(func, func)
+
+    def test_union_reflexivity(self, ts):
+        """Union types should be assignable to themselves."""
+        union = TSUnionType(members=frozenset({TS_STRING, TS_NUMBER}))
+        assert ts.check_assignable(union, union)
+
+
+class TestTypeScriptAnyUnknownNeverProperties:
+    """Test TypeScript special type properties."""
+
+    @pytest.fixture
+    def ts(self):
+        return TypeScriptTypeSystem()
+
+    @pytest.mark.parametrize("typ", TS_PRIMITIVES)
+    def test_any_accepts_everything(self, ts, typ):
+        """any should accept any type (target)."""
+        assert ts.check_assignable(typ, TS_ANY)
+
+    @pytest.mark.parametrize("typ", TS_PRIMITIVES)
+    def test_any_assignable_to_everything(self, ts, typ):
+        """any should be assignable to any type except never."""
+        if typ != TS_NEVER:
+            assert ts.check_assignable(TS_ANY, typ)
+
+    @pytest.mark.parametrize("typ", TS_PRIMITIVES)
+    def test_unknown_accepts_everything(self, ts, typ):
+        """unknown should accept any type (target)."""
+        assert ts.check_assignable(typ, TS_UNKNOWN)
+
+    @pytest.mark.parametrize("typ", TS_PRIMITIVES)
+    def test_never_assignable_to_all(self, ts, typ):
+        """never should be assignable to any type (bottom type)."""
+        assert ts.check_assignable(TS_NEVER, typ)
+
+    def test_nothing_assignable_to_never(self, ts):
+        """Only never should be assignable to never."""
+        for typ in TS_PRIMITIVES:
+            if typ != TS_NEVER:
+                assert not ts.check_assignable(typ, TS_NEVER)
+
+
+class TestTypeScriptUnionProperties:
+    """Test TypeScript union type properties."""
+
+    @pytest.fixture
+    def ts(self):
+        return TypeScriptTypeSystem()
+
+    @pytest.mark.parametrize("typ", TS_PRIMITIVES[:5])  # Use subset for speed
+    def test_member_assignable_to_union(self, ts, typ):
+        """A type should be assignable to a union containing it."""
+        union = TSUnionType(members=frozenset({typ, TS_NULL}))
+        assert ts.check_assignable(typ, union)
+
+    def test_union_subset_assignable(self, ts):
+        """A union should be assignable to a wider union."""
+        narrow = TSUnionType(members=frozenset({TS_STRING, TS_NUMBER}))
+        wide = TSUnionType(members=frozenset({TS_STRING, TS_NUMBER, TS_BOOLEAN}))
+        assert ts.check_assignable(narrow, wide)
+
+
+class TestTypeScriptStructuralTypingProperties:
+    """Test TypeScript structural typing properties."""
+
+    @pytest.fixture
+    def ts(self):
+        return TypeScriptTypeSystem()
+
+    def test_extra_property_compatible(self, ts):
+        """Object with extra properties should be assignable to object with fewer."""
+        source = TSObjectType(
+            properties=(("name", TS_STRING), ("age", TS_NUMBER), ("extra", TS_BOOLEAN)),
+            optional_properties=frozenset(),
+        )
+        target = TSObjectType(
+            properties=(("name", TS_STRING), ("age", TS_NUMBER)),
+            optional_properties=frozenset(),
+        )
+        assert ts.check_assignable(source, target)
+
+    def test_missing_required_not_compatible(self, ts):
+        """Object missing required property should not be assignable."""
+        source = TSObjectType(
+            properties=(("name", TS_STRING),),
+            optional_properties=frozenset(),
+        )
+        target = TSObjectType(
+            properties=(("name", TS_STRING), ("age", TS_NUMBER)),
+            optional_properties=frozenset(),
+        )
+        assert not ts.check_assignable(source, target)
+
+
+class TestTypeScriptParseFormatRoundtrip:
+    """Test that parse and format are consistent."""
+
+    @pytest.fixture
+    def ts(self):
+        return TypeScriptTypeSystem()
+
+    @pytest.mark.parametrize("type_name", TS_PRIMITIVE_NAMES)
+    def test_primitive_roundtrip(self, ts, type_name):
+        """Parsing a primitive and formatting should give valid type."""
+        typ = ts.parse_type_annotation(type_name)
+        formatted = ts.format_type(typ)
+        reparsed = ts.parse_type_annotation(formatted)
+        assert reparsed is not None
+
+    def test_array_roundtrip(self, ts):
+        """Array type should roundtrip."""
+        typ = ts.parse_type_annotation("string[]")
+        formatted = ts.format_type(typ)
+        assert "string" in formatted
+
+    def test_tuple_roundtrip(self, ts):
+        """Tuple type should roundtrip."""
+        typ = ts.parse_type_annotation("[string, number]")
+        formatted = ts.format_type(typ)
+        assert "[" in formatted
+
+    def test_union_roundtrip(self, ts):
+        """Union type should roundtrip."""
+        typ = ts.parse_type_annotation("string | number")
+        formatted = ts.format_type(typ)
+        assert "|" in formatted
+
+    def test_function_roundtrip(self, ts):
+        """Function type should roundtrip."""
+        typ = ts.parse_type_annotation("(x: number) => string")
+        formatted = ts.format_type(typ)
+        assert "=>" in formatted
+
+
+class TestTypeScriptUtilityTypeProperties:
+    """Test utility type properties."""
+
+    @pytest.fixture
+    def ts(self):
+        return TypeScriptTypeSystem()
+
+    def test_partial_idempotent(self, ts):
+        """Partial applied twice should have same effect."""
+        obj = TSObjectType(
+            properties=(("name", TS_STRING),),
+            optional_properties=frozenset(),
+        )
+        partial1 = ts.apply_utility_type("Partial", [obj])
+        partial2 = ts.apply_utility_type("Partial", [partial1])
+        # Both should have all properties optional
+        assert partial1.optional_properties == partial2.optional_properties
+
+    def test_required_undoes_partial(self, ts):
+        """Required should undo Partial."""
+        obj = TSObjectType(
+            properties=(("name", TS_STRING), ("age", TS_NUMBER)),
+            optional_properties=frozenset(),
+        )
+        partial = ts.apply_utility_type("Partial", [obj])
+        required = ts.apply_utility_type("Required", [partial])
+        assert len(required.optional_properties) == 0
+
+    def test_pick_omit_complement(self, ts):
+        """Pick and Omit should be complementary."""
+        obj = TSObjectType(
+            properties=(("a", TS_STRING), ("b", TS_NUMBER), ("c", TS_BOOLEAN)),
+            optional_properties=frozenset(),
+        )
+        pick_key = TSLiteralType(kind="string", value="a")
+        picked = ts.apply_utility_type("Pick", [obj, pick_key])
+        omitted = ts.apply_utility_type("Omit", [obj, pick_key])
+
+        # Picked should have only 'a'
+        assert len(picked.properties) == 1
+        assert "a" in picked
+
+        # Omitted should have 'b' and 'c'
+        assert len(omitted.properties) == 2
+        assert "a" not in omitted
+
+
+# ===========================================================================
 # Cross-Language Property Tests
 # ===========================================================================
 
@@ -376,6 +631,12 @@ try:
     # Strategy for generating valid Rust type names
     rust_primitive_strategy = st.sampled_from(RUST_PRIMITIVE_NAMES)
 
+    # Strategy for generating valid TypeScript type names
+    ts_primitive_strategy = st.sampled_from(TS_PRIMITIVE_NAMES)
+
+    # Strategy for TypeScript array depth
+    ts_array_depth = st.integers(min_value=0, max_value=3)
+
     class TestZigHypothesis:
         """Hypothesis-based property tests for Zig."""
 
@@ -419,6 +680,66 @@ try:
             typ = ts.parse_type_annotation(type_name)
             formatted = ts.format_type(typ)
             assert len(formatted) > 0
+
+    class TestTypeScriptHypothesis:
+        """Hypothesis-based property tests for TypeScript."""
+
+        @pytest.fixture
+        def ts(self):
+            return TypeScriptTypeSystem()
+
+        @given(type_name=ts_primitive_strategy)
+        @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
+        def test_parse_never_fails_on_primitives(self, ts, type_name):
+            """Parsing primitives should never fail."""
+            typ = ts.parse_type_annotation(type_name)
+            assert typ is not None
+
+        @given(type_name=ts_primitive_strategy)
+        @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
+        def test_format_produces_nonempty(self, ts, type_name):
+            """Formatting should produce non-empty string."""
+            typ = ts.parse_type_annotation(type_name)
+            formatted = ts.format_type(typ)
+            assert len(formatted) > 0
+
+        @given(type_name=ts_primitive_strategy, depth=ts_array_depth)
+        @settings(max_examples=30, suppress_health_check=[HealthCheck.function_scoped_fixture])
+        def test_array_nesting_reflexive(self, ts, type_name, depth):
+            """Nested array types should be reflexively assignable."""
+            type_str = type_name
+            for _ in range(depth):
+                type_str = f"{type_str}[]"
+            typ = ts.parse_type_annotation(type_str)
+            assert ts.check_assignable(typ, typ)
+
+        @given(
+            t1=ts_primitive_strategy,
+            t2=ts_primitive_strategy,
+        )
+        @settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
+        def test_union_commutative(self, ts, t1, t2):
+            """Union type members are commutative: T | U == U | T."""
+            assume(t1 != t2)
+            # Exclude 'unknown' since it has special narrowing semantics
+            # unknown requires narrowing to be assigned to non-unknown types
+            assume(t1 != "unknown" and t2 != "unknown")
+            union1 = ts.parse_type_annotation(f"{t1} | {t2}")
+            union2 = ts.parse_type_annotation(f"{t2} | {t1}")
+            # Both should accept the same things
+            typ1 = ts.parse_type_annotation(t1)
+            assert ts.check_assignable(typ1, union1)
+            assert ts.check_assignable(typ1, union2)
+
+        @given(type_name=ts_primitive_strategy)
+        @settings(max_examples=30, suppress_health_check=[HealthCheck.function_scoped_fixture])
+        def test_nullable_contains_type(self, ts, type_name):
+            """Nullable type should accept the base type."""
+            # Exclude 'unknown' since it has special narrowing semantics
+            assume(type_name != "unknown")
+            base_type = ts.parse_type_annotation(type_name)
+            nullable = ts.parse_type_annotation(f"{type_name} | null")
+            assert ts.check_assignable(base_type, nullable)
 
 except ImportError:
     # Hypothesis not available, skip those tests

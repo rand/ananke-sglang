@@ -64,7 +64,7 @@ def get_parser(language: str) -> IncrementalParser:
     """Get an incremental parser for a language.
 
     Args:
-        language: The language name (e.g., 'python')
+        language: The language name (e.g., 'python', 'typescript')
 
     Returns:
         An IncrementalParser instance
@@ -76,6 +76,16 @@ def get_parser(language: str) -> IncrementalParser:
         "python": PythonIncrementalParser,
         "py": PythonIncrementalParser,
     }
+
+    # Try to import TypeScript parser if available
+    try:
+        from parsing.languages.typescript import TypeScriptIncrementalParser
+        parsers["typescript"] = TypeScriptIncrementalParser
+        parsers["ts"] = TypeScriptIncrementalParser
+        parsers["javascript"] = TypeScriptIncrementalParser
+        parsers["js"] = TypeScriptIncrementalParser
+    except ImportError:
+        pass
 
     language_lower = language.lower()
     if language_lower not in parsers:

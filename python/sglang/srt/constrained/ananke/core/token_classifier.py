@@ -696,7 +696,7 @@ def get_language_keywords(language: str) -> FrozenSet[str]:
     """Get all keywords for a programming language.
 
     Args:
-        language: Language name ("python", "zig", "rust")
+        language: Language name ("python", "zig", "rust", "typescript")
 
     Returns:
         Frozen set of keyword strings
@@ -709,6 +709,9 @@ def get_language_keywords(language: str) -> FrozenSet[str]:
     elif language == "rust" or language == "rs":
         from core.token_classifier_rust import RUST_ALL_KEYWORDS
         return RUST_ALL_KEYWORDS
+    elif language in ("typescript", "ts", "javascript", "js"):
+        from core.token_classifier_typescript import TYPESCRIPT_ALL_KEYWORDS
+        return TYPESCRIPT_ALL_KEYWORDS
     else:
         return PYTHON_ALL_KEYWORDS  # Default to Python
 
@@ -717,7 +720,7 @@ def get_language_builtins(language: str) -> FrozenSet[str]:
     """Get all builtins for a programming language.
 
     Args:
-        language: Language name ("python", "zig", "rust")
+        language: Language name ("python", "zig", "rust", "typescript")
 
     Returns:
         Frozen set of builtin strings
@@ -730,6 +733,9 @@ def get_language_builtins(language: str) -> FrozenSet[str]:
     elif language == "rust" or language == "rs":
         from core.token_classifier_rust import RUST_COMMON_MACROS
         return RUST_COMMON_MACROS
+    elif language in ("typescript", "ts", "javascript", "js"):
+        from core.token_classifier_typescript import TYPESCRIPT_ALL_BUILTINS
+        return TYPESCRIPT_ALL_BUILTINS
     else:
         return PYTHON_BUILTINS  # Default to Python
 
@@ -744,7 +750,7 @@ def classify_token_for_language(
 
     Args:
         text: The token text to classify
-        language: Programming language ("python", "zig", "rust")
+        language: Programming language ("python", "zig", "rust", "typescript")
 
     Returns:
         Tuple of (category, keyword_name or None, literal_value or None)
@@ -757,6 +763,10 @@ def classify_token_for_language(
     elif language == "rust" or language == "rs":
         from core.token_classifier_rust import classify_rust_token
         return classify_rust_token(stripped)
+    elif language in ("typescript", "ts", "javascript", "js"):
+        from core.token_classifier_typescript import classify_typescript_token
+        result = classify_typescript_token(stripped)
+        return (result.category, result.keyword_name, result.literal_value)
     else:
         # Python (default)
         return _classify_python_token(stripped)
@@ -833,4 +843,4 @@ def supported_classifier_languages() -> List[str]:
     Returns:
         List of supported language names
     """
-    return ["python", "zig", "rust"]
+    return ["python", "zig", "rust", "typescript"]

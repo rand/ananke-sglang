@@ -377,6 +377,16 @@ def get_type_system(language: str) -> LanguageTypeSystem:
     except ImportError:
         pass
 
+    # Try to import TypeScript type system if available
+    try:
+        from domains.types.languages.typescript import TypeScriptTypeSystem
+        systems["typescript"] = TypeScriptTypeSystem
+        systems["ts"] = TypeScriptTypeSystem
+        systems["javascript"] = TypeScriptTypeSystem  # JS is a subset of TS
+        systems["js"] = TypeScriptTypeSystem
+    except ImportError:
+        pass
+
     language_lower = language.lower()
     if language_lower not in systems:
         supported = ", ".join(sorted(set(systems.keys())))
@@ -406,6 +416,13 @@ def supported_languages() -> List[str]:
     try:
         from domains.types.languages.rust import RustTypeSystem
         languages.append("rust")
+    except ImportError:
+        pass
+
+    # Check for TypeScript support
+    try:
+        from domains.types.languages.typescript import TypeScriptTypeSystem
+        languages.append("typescript")
     except ImportError:
         pass
 
