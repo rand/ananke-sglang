@@ -31,12 +31,19 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import pickle
 import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 import torch
+
+# Cache configuration
+CLASSIFIER_CACHE_DIR = Path.home() / ".cache" / "ananke" / "classifiers"
+CLASSIFIER_CACHE_VERSION = 1  # Bump this to invalidate all caches
 
 
 class TokenCategory(Enum):
@@ -651,35 +658,153 @@ class TokenClassifier:
 
         return stats
 
+    # ==================== Serialization ====================
+
+    def save(self, path: Path) -> None:
+        """Save classifier to disk for fast reload.
+
+        Args:
+            path: File path to save to
+        """
+        if not self._initialized:
+            raise ValueError("Cannot save uninitialized classifier")
+
+        # Don't save the tokenizer - it's not serializable and not needed
+        # We'll reconstruct it on load
+        data = {
+            "version": CLASSIFIER_CACHE_VERSION,
+            "vocab_size": self._vocab_size,
+            "language": self._language,
+            "classifications": self._classifications,
+            "by_category": {cat: tokens for cat, tokens in self._by_category.items()},
+            "by_keyword": self._by_keyword,
+            "by_builtin": self._by_builtin,
+        }
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    @classmethod
+    def load(cls, path: Path, tokenizer: Any) -> Optional["TokenClassifier"]:
+        """Load classifier from disk.
+
+        Args:
+            path: File path to load from
+            tokenizer: Tokenizer to associate (for vocab_size validation)
+
+        Returns:
+            Loaded TokenClassifier or None if cache is invalid
+        """
+        try:
+            with open(path, "rb") as f:
+                data = pickle.load(f)
+
+            # Version check
+            if data.get("version") != CLASSIFIER_CACHE_VERSION:
+                return None
+
+            # Vocab size check
+            vocab_size = len(tokenizer.get_vocab()) if hasattr(tokenizer, "get_vocab") else tokenizer.vocab_size
+            if data["vocab_size"] != vocab_size:
+                return None
+
+            # Reconstruct classifier
+            instance = cls.__new__(cls)
+            instance._tokenizer = tokenizer
+            instance._vocab_size = data["vocab_size"]
+            instance._language = data["language"]
+            instance._classifications = data["classifications"]
+            instance._by_category = data["by_category"]
+            instance._by_keyword = data["by_keyword"]
+            instance._by_builtin = data["by_builtin"]
+            instance._category_masks = {}  # Will be lazily computed
+            instance._initialized = True
+
+            return instance
+
+        except (pickle.UnpicklingError, AttributeError, EOFError, KeyError, TypeError):
+            return None
+
 
 # Global classifier cache
 _classifier_cache: Dict[int, TokenClassifier] = {}
 
 
+def _compute_vocab_hash(tokenizer: Any) -> str:
+    """Compute a deterministic hash of the vocabulary.
+
+    Args:
+        tokenizer: The tokenizer
+
+    Returns:
+        16-character hex hash
+    """
+    if hasattr(tokenizer, "get_vocab"):
+        vocab = tokenizer.get_vocab()
+        vocab_str = str(sorted(vocab.items()))
+    else:
+        # Fallback: use vocab size and a sample of tokens
+        vocab_size = tokenizer.vocab_size
+        sample_tokens = [tokenizer.decode([i]) for i in range(min(100, vocab_size))]
+        vocab_str = f"{vocab_size}:{sample_tokens}"
+
+    return hashlib.sha256(vocab_str.encode()).hexdigest()[:16]
+
+
 def get_or_create_classifier(
     tokenizer: Any,
     language: str = "python",
+    use_disk_cache: bool = True,
+    cache_dir: Optional[Path] = None,
 ) -> TokenClassifier:
     """Get or create a TokenClassifier for a tokenizer.
 
-    Uses a global cache keyed by tokenizer ID to avoid
-    re-classifying the same vocabulary multiple times.
+    Uses a two-level cache:
+    1. In-memory cache keyed by tokenizer ID (fastest)
+    2. Persistent disk cache keyed by vocabulary hash (survives restarts)
 
     Args:
         tokenizer: The model's tokenizer
         language: Programming language
+        use_disk_cache: Whether to use persistent disk caching
+        cache_dir: Optional custom cache directory
 
     Returns:
         Initialized TokenClassifier
     """
+    # Level 1: In-memory cache
     key = id(tokenizer)
+    if key in _classifier_cache:
+        return _classifier_cache[key]
 
-    if key not in _classifier_cache:
+    # Level 2: Disk cache
+    classifier = None
+    cache_path = None
+
+    if use_disk_cache:
+        cache_dir = cache_dir or CLASSIFIER_CACHE_DIR
+        vocab_hash = _compute_vocab_hash(tokenizer)
+        cache_path = cache_dir / f"classifier_{language}_{vocab_hash}.pkl"
+
+        if cache_path.exists():
+            classifier = TokenClassifier.load(cache_path, tokenizer)
+
+    # Level 3: Compute from scratch
+    if classifier is None:
         classifier = TokenClassifier(tokenizer, language)
         classifier.initialize()
-        _classifier_cache[key] = classifier
 
-    return _classifier_cache[key]
+        # Save to disk cache for next time
+        if use_disk_cache and cache_path is not None:
+            try:
+                classifier.save(cache_path)
+            except (OSError, IOError):
+                pass  # Cache write failure is non-fatal
+
+    # Store in memory cache
+    _classifier_cache[key] = classifier
+    return classifier
 
 
 def clear_classifier_cache() -> None:
