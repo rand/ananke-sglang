@@ -35,11 +35,11 @@ Ananke is a compositional constraint system for verified code generation. It com
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────┐
-│                                  AnankeGrammar                                    │
-│                                                                                   │
+│                                  AnankeGrammar                                   │
+│                                                                                  │
 │  ┌─────────────────────┐    ┌──────────────────────────────────────────────────┐ │
-│  │   Syntax Domain     │    │              Constraint Domains                   │ │
-│  │    (llguidance)     │    │                                                   │ │
+│  │   Syntax Domain     │    │              Constraint Domains                  │ │
+│  │    (llguidance)     │    │                                                  │ │
 │  │                     │    │  ┌────────────┐ ┌────────────┐ ┌──────────────┐  │ │
 │  │  ┌───────────────┐  │    │  │   Types    │ │  Imports   │ │ ControlFlow  │  │ │
 │  │  │ CFG Parsing   │  │    │  │            │ │            │ │              │  │ │
@@ -49,26 +49,26 @@ Ananke is a compositional constraint system for verified code generation. It com
 │  │  │ EBNF          │  │    │  │            │ │            │ │              │  │ │
 │  │  │               │  │    │  │  <500μs    │ │  <200μs    │ │   <100μs     │  │ │
 │  │  │   ~50μs       │  │    │  └─────┬──────┘ └─────┬──────┘ └───────┬──────┘  │ │
-│  │  └───────┬───────┘  │    │        │             │                │         │ │
-│  │          │          │    │        └─────────────┴────────────────┘         │ │
-│  └──────────┼──────────┘    │                      │                          │ │
-│             │               │        ┌─────────────▼─────────────┐            │ │
-│             │               │        │    Semantics Domain       │            │ │
-│             │               │        │   (SMT/Z3 - optional)     │            │ │
-│             │               │        │        <1ms               │            │ │
-│             │               │        └─────────────┬─────────────┘            │ │
-│             │               └──────────────────────┼──────────────────────────┘ │
-│             │                                      │                            │
-│             │          ┌───────────────────────────▼──────────────────────────┐ │
+│  │  └───────┬───────┘  │    │        │              │                │         │ │
+│  │          │          │    │        └──────────────┴────────────────┘         │ │
+│  └──────────┼──────────┘    │                       │                          │ │
+│             │               │        ┌──────────────▼─────────────┐            │ │
+│             │               │        │    Semantics Domain        │            │ │
+│             │               │        │   (SMT/Z3 - optional)      │            │ │
+│             │               │        │        <1ms                │            │ │
+│             │               │        └─────────────┬──────────────┘            │ │
+│             │               └──────────────────────┼───────────────────────────┘ │
+│             │                                      │                             │
+│             │          ┌───────────────────────────▼───────────────────────────┐ │
 │             └──────────►                  Mask Fusion                          │ │
 │                        │                                                       │ │
 │                        │   • Selectivity-ordered evaluation                    │ │
 │                        │   • Early termination on highly selective masks       │ │
 │                        │   • Zig SIMD acceleration (~50x faster)               │ │
 │                        │   • Lazy evaluation with budget control               │ │
-│                        └───────────────────────────┬──────────────────────────┘ │
-│                                                    │                            │
-│  ┌─────────────────────────┐    ┌──────────────────▼──────────────────────────┐ │
+│                        └───────────────────────────┬───────────────────────────┘ │
+│                                                    │                             │
+│  ┌─────────────────────────┐    ┌──────────────────▼───────────────────────────┐ │
 │  │   Checkpoint System     │    │              Final Token Mask                │ │
 │  │                         │    │                                              │ │
 │  │  • Sparse checkpoints   │    │   Boolean tensor (vocab_size,) indicating    │ │
@@ -76,15 +76,15 @@ Ananke is a compositional constraint system for verified code generation. It com
 │  │  • O(1) checkpoint ops  │    │                                              │ │
 │  │  • Max 200 rollback     │    └──────────────────────────────────────────────┘ │
 │  └─────────────────────────┘                                                     │
-│                                                                                   │
-│  ┌───────────────────────────────────────────────────────────────────────────┐   │
-│  │                         Typed Holes System (Hazel)                         │   │
-│  │                                                                            │   │
-│  │   • Environment capture: Holes carry their typing context                  │   │
-│  │   • Fill-and-resume: Generate code incrementally                           │   │
-│  │   • Granularities: TOKEN → EXPRESSION → STATEMENT → BLOCK → FUNCTION       │   │
-│  │   • Totality: Every partial program has a well-defined constraint          │   │
-│  └───────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                  │
+│  ┌────────────────────────────────────────────────────────────────────────────┐  │
+│  │                         Typed Holes System (Hazel)                         │  │
+│  │                                                                            │  │
+│  │   • Environment capture: Holes carry their typing context                  │  │
+│  │   • Fill-and-resume: Generate code incrementally                           │  │
+│  │   • Granularities: TOKEN → EXPRESSION → STATEMENT → BLOCK → FUNCTION       │  │
+│  │   • Totality: Every partial program has a well-defined constraint          │  │
+│  └────────────────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
