@@ -29,7 +29,7 @@ def check_health(base_url: str, timeout: int = 10) -> bool:
         req = Request(f"{base_url}/health", method="GET")
         with urlopen(req, timeout=timeout) as response:
             return response.status == 200
-    except (URLError, TimeoutError):
+    except (URLError, TimeoutError, ValueError, OSError):
         return False
 
 
@@ -39,7 +39,7 @@ def check_health_generate(base_url: str, timeout: int = 30) -> bool:
         req = Request(f"{base_url}/health_generate", method="GET")
         with urlopen(req, timeout=timeout) as response:
             return response.status == 200
-    except (URLError, TimeoutError):
+    except (URLError, TimeoutError, ValueError, OSError):
         return False
 
 
@@ -50,7 +50,7 @@ def check_models(base_url: str, timeout: int = 10) -> Optional[dict]:
         with urlopen(req, timeout=timeout) as response:
             if response.status == 200:
                 return json.loads(response.read().decode())
-    except (URLError, TimeoutError, json.JSONDecodeError):
+    except (URLError, TimeoutError, ValueError, OSError, json.JSONDecodeError):
         pass
     return None
 
@@ -79,7 +79,7 @@ def check_ananke(base_url: str, timeout: int = 30) -> bool:
 
         with urlopen(req, timeout=timeout) as response:
             return response.status == 200
-    except (URLError, TimeoutError):
+    except (URLError, TimeoutError, ValueError, OSError):
         return False
 
 
