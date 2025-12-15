@@ -12,6 +12,35 @@
 
 --------------------------------------------------------------------------------
 
+> ## Ananke Fork
+>
+> This is the **Ananke fork** of SGLang, adding multi-domain constrained generation
+> with type-safe, semantically-guided code generation capabilities.
+>
+> **Ananke Features:**
+> - **5 Constraint Domains**: Syntax, Types, Imports, Control Flow, Semantics
+> - **7 Languages**: Python, TypeScript, Go, Rust, Kotlin, Swift, Zig
+> - **Hazel-Based Typed Holes**: Incremental bidirectional type checking
+> - **High Performance**: Zig SIMD mask fusion, sparse checkpointing, lazy evaluation
+>
+> **Quick Start:**
+> ```bash
+> python -m sglang.launch_server --model-path <MODEL> --grammar-backend ananke
+> ```
+>
+> **Documentation:**
+> | Document | Description |
+> |----------|-------------|
+> | [Getting Started](python/sglang/srt/constrained/ananke/docs/GETTING_STARTED.md) | Usage guide |
+> | [Architecture](python/sglang/srt/constrained/ananke/docs/ARCHITECTURE.md) | System overview |
+> | [API Reference](python/sglang/srt/constrained/ananke/docs/REFERENCE.md) | Complete API docs |
+> | [Deployment](python/sglang/srt/constrained/ananke/docs/DEPLOYMENT.md) | Production deployment |
+> | [Contributing](python/sglang/srt/constrained/ananke/docs/CONTRIBUTING.md) | Developer guide |
+>
+> See the [Ananke README](python/sglang/srt/constrained/ananke/README.md) for full details.
+
+--------------------------------------------------------------------------------
+
 | [**Blog**](https://lmsys.org/blog/)
 | [**Documentation**](https://docs.sglang.io/)
 | [**Roadmap**](https://roadmap.sglang.io/)
