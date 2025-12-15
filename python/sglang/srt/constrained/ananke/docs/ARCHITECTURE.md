@@ -77,14 +77,14 @@ Ananke is a compositional constraint system for verified code generation. It com
 │  │  • Max 200 rollback     │    └──────────────────────────────────────────────┘ │
 │  └─────────────────────────┘                                                     │
 │                                                                                  │
-│  ┌────────────────────────────────────────────────────────────────────────────┐  │
-│  │                         Typed Holes System (Hazel)                         │  │
-│  │                                                                            │  │
-│  │   • Environment capture: Holes carry their typing context                  │  │
-│  │   • Fill-and-resume: Generate code incrementally                           │  │
-│  │   • Granularities: TOKEN → EXPRESSION → STATEMENT → BLOCK → FUNCTION       │  │
-│  │   • Totality: Every partial program has a well-defined constraint          │  │
-│  └────────────────────────────────────────────────────────────────────────────┘  │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
+│  │                         Typed Holes System (Hazel)                          │ │
+│  │                                                                             │ │
+│  │   • Environment capture: Holes carry their typing context                   │ │
+│  │   • Fill-and-resume: Generate code incrementally                            │ │
+│  │   • Granularities: TOKEN → EXPRESSION → STATEMENT → BLOCK → FUNCTION        │ │
+│  │   • Totality: Every partial program has a well-defined constraint           │ │
+│  └─────────────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
