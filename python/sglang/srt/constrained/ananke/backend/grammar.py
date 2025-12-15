@@ -470,26 +470,39 @@ class AnankeGrammar(BaseGrammarObject):
         """Apply a domain's boolean mask to the vocabulary bitmask.
 
         This performs bitwise AND between the existing bitmask and
-        the domain's boolean mask.
+        the domain's boolean mask using vectorized PyTorch operations.
+
+        Complexity: O(vocab_size / 32) tensor operations instead of
+        O(vocab_size) Python loop iterations.
 
         Args:
             vocab_mask: The vocabulary bitmask tensor [batch_size, mask_size]
             idx: Batch index for this request
             domain_mask: Boolean mask from domain [vocab_size]
         """
-        # Convert boolean mask to bitmask format and AND with existing
         vocab_size = domain_mask.shape[0]
+        device = domain_mask.device
         mask_size = vocab_mask.shape[1]
 
-        for word_idx in range(mask_size):
-            start_bit = word_idx * 32
-            end_bit = min(start_bit + 32, vocab_size)
+        # Pad to multiple of 32 for clean reshaping
+        padded_size = ((vocab_size + 31) // 32) * 32
+        if vocab_size < padded_size:
+            padded = torch.zeros(padded_size, dtype=torch.bool, device=device)
+            padded[:vocab_size] = domain_mask
+        else:
+            padded = domain_mask
 
-            # Build word from domain mask bits
-            word = 0
-            for bit_offset, token_idx in enumerate(range(start_bit, end_bit)):
-                if domain_mask[token_idx]:
-                    word |= 1 << bit_offset
+        # Reshape to [num_words, 32] for bit packing
+        reshaped = padded.view(-1, 32)
 
-            # AND with existing mask
-            vocab_mask[idx, word_idx] &= word
+        # Get or create powers of 2 lookup table (cached at class level)
+        if not hasattr(self, '_powers_of_2') or self._powers_of_2.device != device:
+            self._powers_of_2 = (2 ** torch.arange(32, device=device, dtype=torch.int64))
+
+        # Vectorized bit packing: convert each row of 32 bools to an int32
+        # Using int64 intermediate to avoid overflow, then cast to int32
+        packed = (reshaped.to(torch.int64) * self._powers_of_2).sum(dim=1).to(torch.int32)
+
+        # Apply via vectorized AND with existing mask
+        num_words = min(packed.shape[0], mask_size)
+        vocab_mask[idx, :num_words] &= packed[:num_words]
