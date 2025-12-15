@@ -588,6 +588,27 @@ class KotlinTypeSystem(LanguageTypeSystem):
         if isinstance(source, KotlinFunctionType) and isinstance(target, KotlinFunctionType):
             return self._check_function_assignable(source, target)
 
+        # Generic type assignability with variance
+        if isinstance(source, KotlinGenericType) and isinstance(target, KotlinGenericType):
+            return self._check_generic_assignable(source, target)
+
+        # Handle variance projections in type parameters
+        if isinstance(target, KotlinTypeParameter) and target.variance != "invariant":
+            return self._check_variance_projection(source, target)
+
+        # Star projection accepts any type
+        if isinstance(target, KotlinStarProjection):
+            return True
+
+        # Class type compatibility (simple name match for now)
+        if isinstance(source, KotlinClassType) and isinstance(target, KotlinClassType):
+            return self._check_class_assignable(source, target)
+
+        # Primitive to class type (e.g., Int to Number)
+        if isinstance(source, PrimitiveType) and isinstance(target, KotlinClassType):
+            # Check using known class hierarchy
+            return self._is_known_subclass(source.name, target.name)
+
         return False
 
     def _check_numeric_assignable(self, source: PrimitiveType, target: PrimitiveType) -> bool:
@@ -623,6 +644,207 @@ class KotlinTypeSystem(LanguageTypeSystem):
 
         # Return type is covariant
         return self.check_assignable(source.return_type, target.return_type)
+
+    def _check_generic_assignable(
+        self,
+        source: KotlinGenericType,
+        target: KotlinGenericType
+    ) -> bool:
+        """Check generic type assignability with variance support.
+
+        Kotlin has both declaration-site and use-site variance:
+        - Declaration-site: class Box<out T> or class Consumer<in T>
+        - Use-site: Box<out String>, Box<in String>, Box<*>
+
+        For use-site variance projections in type arguments:
+        - out T (covariant): Producer<out String> accepts Producer<String> or Producer<SubString>
+        - in T (contravariant): Consumer<in String> accepts Consumer<String> or Consumer<Any>
+        """
+        # Base types must match
+        if source.base != target.base:
+            return False
+
+        # Same number of type arguments
+        if len(source.type_args) != len(target.type_args):
+            return False
+
+        # Check each type argument with variance rules
+        for source_arg, target_arg in zip(source.type_args, target.type_args):
+            if not self._check_type_arg_compatible(source_arg, target_arg):
+                return False
+
+        return True
+
+    def _check_type_arg_compatible(self, source_arg: Type, target_arg: Type) -> bool:
+        """Check if a source type argument is compatible with a target type argument.
+
+        Handles variance projections:
+        - Target is `out T`: source must be subtype of T (covariant)
+        - Target is `in T`: source must be supertype of T (contravariant)
+        - Target is `*`: accepts anything (star projection)
+        - Target is plain T: must be exact match (invariant)
+        """
+        # Star projection accepts anything
+        if isinstance(target_arg, KotlinStarProjection):
+            return True
+
+        # Target has variance projection
+        if isinstance(target_arg, KotlinTypeParameter) and target_arg.variance != "invariant":
+            return self._check_variance_projection(source_arg, target_arg)
+
+        # Source has variance projection matching to non-projected target
+        if isinstance(source_arg, KotlinTypeParameter) and source_arg.variance != "invariant":
+            # Source with `out T` can match target T if inner type matches
+            if source_arg.variance == "out" and source_arg.bound:
+                return self.check_assignable(source_arg.bound, target_arg)
+            # Source with `in T` can match target T if inner type matches
+            elif source_arg.variance == "in" and source_arg.bound:
+                return self.check_assignable(target_arg, source_arg.bound)
+            return False
+
+        # Neither has variance - must be assignable
+        return self.check_assignable(source_arg, target_arg)
+
+    def _check_variance_projection(self, source: Type, target: KotlinTypeParameter) -> bool:
+        """Check if source type satisfies a variance projection in target.
+
+        Args:
+            source: The type being checked
+            target: A KotlinTypeParameter with variance ("in" or "out") and bound
+
+        For `out T` (covariant projection):
+            - source must be a subtype of T
+            - e.g., `List<out Number>` accepts `List<Int>` because Int <: Number
+
+        For `in T` (contravariant projection):
+            - source must be a supertype of T
+            - e.g., `Consumer<in Int>` accepts `Consumer<Number>` because Number :> Int
+        """
+        if target.bound is None:
+            # No bound means Any bound
+            return True
+
+        if target.variance == "out":
+            # Covariant: source must be subtype of bound
+            # Handle source being a type parameter with its own projection
+            if isinstance(source, KotlinTypeParameter):
+                if source.variance == "out" and source.bound:
+                    return self.check_assignable(source.bound, target.bound)
+                elif source.bound:
+                    return self.check_assignable(source.bound, target.bound)
+            return self.check_assignable(source, target.bound)
+
+        elif target.variance == "in":
+            # Contravariant: source must be supertype of bound
+            # Handle source being a type parameter with its own projection
+            if isinstance(source, KotlinTypeParameter):
+                if source.variance == "in" and source.bound:
+                    return self.check_assignable(target.bound, source.bound)
+                elif source.bound:
+                    return self.check_assignable(target.bound, source.bound)
+            return self.check_assignable(target.bound, source)
+
+        # Invariant - should not reach here as caller checks
+        return source == target.bound
+
+    def _check_class_assignable(
+        self,
+        source: KotlinClassType,
+        target: KotlinClassType
+    ) -> bool:
+        """Check class type assignability.
+
+        For now, uses name-based matching with some special case handling:
+        - Data classes, sealed classes, interfaces follow Kotlin's nominal typing
+        - Full class hierarchy tracking would require parsing class definitions
+        """
+        # Exact name match (including package path)
+        if source.name == target.name:
+            # Check type parameters if present
+            if source.type_params and target.type_params:
+                if len(source.type_params) != len(target.type_params):
+                    return False
+                for sp, tp in zip(source.type_params, target.type_params):
+                    if not self._check_type_param_compatible(sp, tp):
+                        return False
+            return True
+
+        # Known hierarchy relationships
+        if self._is_known_subclass(source.name, target.name):
+            return True
+
+        return False
+
+    def _check_type_param_compatible(
+        self,
+        source: KotlinTypeParameter,
+        target: KotlinTypeParameter
+    ) -> bool:
+        """Check type parameter compatibility considering variance."""
+        # Same name and compatible variance
+        if source.name == target.name:
+            # Check variance compatibility
+            if source.variance == target.variance:
+                # Check bounds
+                if source.bound and target.bound:
+                    return self.check_assignable(source.bound, target.bound)
+                return True
+            # out can satisfy invariant in some cases
+            if target.variance == "invariant" and source.variance == "out":
+                if source.bound and target.bound:
+                    return self.check_assignable(source.bound, target.bound)
+        return False
+
+    def _is_known_subclass(self, child: str, parent: str) -> bool:
+        """Check known class hierarchy relationships.
+
+        This provides a heuristic for common Kotlin class relationships.
+        Full hierarchy tracking would require parsing class definitions.
+        """
+        # Common Kotlin class hierarchies
+        hierarchies = {
+            # Collection hierarchies
+            "ArrayList": {"List", "MutableList", "Collection", "MutableCollection", "Iterable", "MutableIterable"},
+            "LinkedList": {"List", "MutableList", "Collection", "MutableCollection", "Iterable", "MutableIterable"},
+            "HashSet": {"Set", "MutableSet", "Collection", "MutableCollection", "Iterable", "MutableIterable"},
+            "LinkedHashSet": {"Set", "MutableSet", "Collection", "MutableCollection", "Iterable", "MutableIterable"},
+            "TreeSet": {"Set", "MutableSet", "Collection", "MutableCollection", "Iterable", "MutableIterable"},
+            "HashMap": {"Map", "MutableMap"},
+            "LinkedHashMap": {"Map", "MutableMap"},
+            "TreeMap": {"Map", "MutableMap"},
+
+            # Number hierarchy
+            "Int": {"Number", "Comparable"},
+            "Long": {"Number", "Comparable"},
+            "Short": {"Number", "Comparable"},
+            "Byte": {"Number", "Comparable"},
+            "Float": {"Number", "Comparable"},
+            "Double": {"Number", "Comparable"},
+
+            # String/Char
+            "String": {"CharSequence", "Comparable"},
+            "StringBuilder": {"CharSequence"},
+            "Char": {"Comparable"},
+
+            # Common supertypes
+            "MutableList": {"List", "MutableCollection", "Collection", "Iterable", "MutableIterable"},
+            "MutableSet": {"Set", "MutableCollection", "Collection", "Iterable", "MutableIterable"},
+            "MutableMap": {"Map"},
+            "MutableCollection": {"Collection", "Iterable", "MutableIterable"},
+            "Collection": {"Iterable"},
+            "MutableIterable": {"Iterable"},
+            "List": {"Collection", "Iterable"},
+            "Set": {"Collection", "Iterable"},
+        }
+
+        # Everything is a subtype of Any
+        if parent == "Any":
+            return True
+
+        if child in hierarchies:
+            return parent in hierarchies[child]
+
+        return False
 
     def format_type(self, typ: Type) -> str:
         """Format a type for display."""

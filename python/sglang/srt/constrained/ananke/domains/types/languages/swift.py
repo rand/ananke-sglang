@@ -617,9 +617,42 @@ class SwiftTypeSystem(LanguageTypeSystem):
         if isinstance(source, SwiftFunctionType) and isinstance(target, SwiftFunctionType):
             return self._check_function_assignable(source, target)
 
-        # Protocol conformance would go here (simplified)
+        # Protocol conformance
         if isinstance(target, SwiftProtocolType):
-            return True  # Simplified - real check would verify conformance
+            return self._check_protocol_conformance(source, target)
+
+        # Protocol composition (P1 & P2)
+        if isinstance(target, SwiftProtocolCompositionType):
+            return self._check_protocol_composition_conformance(source, target)
+
+        # Existential type (any Protocol)
+        if isinstance(target, SwiftExistentialType):
+            return self._check_existential_assignable(source, target)
+
+        # Opaque type (some Protocol) - source must conform to constraint
+        if isinstance(target, SwiftOpaqueType):
+            return self._check_opaque_assignable(source, target)
+
+        # Generic type assignability
+        if isinstance(source, SwiftGenericType) and isinstance(target, SwiftGenericType):
+            return self._check_generic_assignable(source, target)
+
+        # Named type assignability (struct/class/enum)
+        if isinstance(source, SwiftNamedType) and isinstance(target, SwiftNamedType):
+            return self._check_named_type_assignable(source, target)
+
+        # Set covariance
+        if isinstance(source, SwiftSetType) and isinstance(target, SwiftSetType):
+            return self.check_assignable(source.element, target.element)
+
+        # Result type assignability
+        if isinstance(source, SwiftResultType) and isinstance(target, SwiftResultType):
+            return (self.check_assignable(source.success, target.success) and
+                    self.check_assignable(source.failure, target.failure))
+
+        # Tuple assignability
+        if isinstance(source, SwiftTupleType) and isinstance(target, SwiftTupleType):
+            return self._check_tuple_assignable(source, target)
 
         return False
 
@@ -647,6 +680,344 @@ class SwiftTypeSystem(LanguageTypeSystem):
 
         # Return type is covariant
         return self.check_assignable(source.return_type, target.return_type)
+
+    def _check_protocol_conformance(self, source: Type, target: SwiftProtocolType) -> bool:
+        """Check if a type conforms to a protocol.
+
+        Swift uses nominal protocol conformance - a type must explicitly
+        declare conformance. This implementation provides heuristic checking
+        for common Swift protocols since full conformance tracking would
+        require parsing entire codebases.
+
+        Common protocols checked:
+        - Equatable, Hashable, Comparable, Identifiable
+        - Codable (Encodable & Decodable)
+        - Sequence, Collection, IteratorProtocol
+        - CustomStringConvertible, CustomDebugStringConvertible
+        - Error
+        """
+        protocol_name = target.name
+
+        # Get the source type name for conformance checking
+        source_name = self._get_type_name(source)
+
+        # Check known conformances
+        return self._type_conforms_to_protocol(source, source_name, protocol_name)
+
+    def _get_type_name(self, typ: Type) -> str:
+        """Extract the base type name from a type."""
+        if isinstance(typ, PrimitiveType):
+            return typ.name
+        elif isinstance(typ, SwiftNamedType):
+            return typ.name
+        elif isinstance(typ, SwiftGenericType):
+            return typ.base
+        elif isinstance(typ, SwiftArrayType):
+            return "Array"
+        elif isinstance(typ, SwiftDictionaryType):
+            return "Dictionary"
+        elif isinstance(typ, SwiftSetType):
+            return "Set"
+        elif isinstance(typ, SwiftOptionalType):
+            return "Optional"
+        elif isinstance(typ, SwiftResultType):
+            return "Result"
+        elif isinstance(typ, SwiftTupleType):
+            return "Tuple"
+        elif isinstance(typ, SwiftProtocolType):
+            return typ.name
+        return ""
+
+    def _type_conforms_to_protocol(self, typ: Type, type_name: str, protocol: str) -> bool:
+        """Check if a type conforms to a specific protocol.
+
+        This provides heuristic conformance checking for common Swift types.
+        """
+        # Known protocol conformances for Swift standard library types
+        # Structure: type_name -> set of protocols it conforms to
+        conformances: Dict[str, FrozenSet[str]] = {
+            # Primitives
+            "Int": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                             "SignedNumeric", "BinaryInteger", "FixedWidthInteger",
+                             "CustomStringConvertible", "LosslessStringConvertible"}),
+            "Int8": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                              "SignedNumeric", "BinaryInteger", "FixedWidthInteger"}),
+            "Int16": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                               "SignedNumeric", "BinaryInteger", "FixedWidthInteger"}),
+            "Int32": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                               "SignedNumeric", "BinaryInteger", "FixedWidthInteger"}),
+            "Int64": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                               "SignedNumeric", "BinaryInteger", "FixedWidthInteger"}),
+            "UInt": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                              "UnsignedInteger", "BinaryInteger", "FixedWidthInteger"}),
+            "UInt8": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                               "UnsignedInteger", "BinaryInteger", "FixedWidthInteger"}),
+            "UInt16": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                                "UnsignedInteger", "BinaryInteger", "FixedWidthInteger"}),
+            "UInt32": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                                "UnsignedInteger", "BinaryInteger", "FixedWidthInteger"}),
+            "UInt64": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                                "UnsignedInteger", "BinaryInteger", "FixedWidthInteger"}),
+            "Float": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                               "FloatingPoint", "BinaryFloatingPoint"}),
+            "Double": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                                "FloatingPoint", "BinaryFloatingPoint"}),
+            "Float16": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                                 "FloatingPoint", "BinaryFloatingPoint"}),
+            "Bool": frozenset({"Equatable", "Hashable", "Codable", "CustomStringConvertible"}),
+            "Character": frozenset({"Equatable", "Hashable", "Comparable",
+                                   "CustomStringConvertible"}),
+            "String": frozenset({"Equatable", "Hashable", "Comparable", "Codable",
+                                "Collection", "Sequence", "BidirectionalCollection",
+                                "StringProtocol", "CustomStringConvertible",
+                                "ExpressibleByStringLiteral", "LosslessStringConvertible"}),
+
+            # Collections
+            "Array": frozenset({"Equatable", "Hashable", "Codable", "Sequence", "Collection",
+                               "MutableCollection", "RandomAccessCollection",
+                               "RangeReplaceableCollection", "ExpressibleByArrayLiteral"}),
+            "Dictionary": frozenset({"Equatable", "Codable", "Sequence", "Collection",
+                                    "ExpressibleByDictionaryLiteral"}),
+            "Set": frozenset({"Equatable", "Hashable", "Codable", "Sequence", "Collection",
+                             "SetAlgebra", "ExpressibleByArrayLiteral"}),
+            "Optional": frozenset({"Equatable", "Hashable", "ExpressibleByNilLiteral"}),
+
+            # Result type
+            "Result": frozenset({"Equatable", "Hashable"}),
+
+            # Common Foundation types
+            "URL": frozenset({"Equatable", "Hashable", "Codable"}),
+            "Data": frozenset({"Equatable", "Hashable", "Codable", "Collection", "Sequence"}),
+            "Date": frozenset({"Equatable", "Hashable", "Comparable", "Codable"}),
+            "UUID": frozenset({"Equatable", "Hashable", "Codable", "CustomStringConvertible"}),
+
+            # Common SwiftUI types
+            "Color": frozenset({"Equatable", "Hashable", "View"}),
+            "Text": frozenset({"View"}),
+            "Image": frozenset({"View"}),
+        }
+
+        # Check direct conformance
+        if type_name in conformances:
+            if protocol in conformances[type_name]:
+                return True
+
+        # Check conditional conformances for generic types
+        if isinstance(typ, SwiftArrayType):
+            # Array<Element> conforms to Equatable/Hashable if Element does
+            if protocol in ("Equatable", "Hashable", "Codable"):
+                element_name = self._get_type_name(typ.element)
+                if element_name in conformances:
+                    return protocol in conformances.get(element_name, frozenset())
+            # Array always conforms to Sequence/Collection
+            if protocol in ("Sequence", "Collection", "RandomAccessCollection"):
+                return True
+
+        if isinstance(typ, SwiftDictionaryType):
+            # Dictionary<Key, Value> conditional conformances
+            if protocol == "Codable":
+                key_name = self._get_type_name(typ.key)
+                value_name = self._get_type_name(typ.value)
+                key_codable = "Codable" in conformances.get(key_name, frozenset())
+                value_codable = "Codable" in conformances.get(value_name, frozenset())
+                return key_codable and value_codable
+            if protocol in ("Sequence", "Collection"):
+                return True
+
+        if isinstance(typ, SwiftSetType):
+            if protocol in ("Sequence", "Collection", "SetAlgebra"):
+                return True
+
+        if isinstance(typ, SwiftOptionalType):
+            # Optional<Wrapped> conforms to Equatable/Hashable if Wrapped does
+            if protocol in ("Equatable", "Hashable"):
+                wrapped_name = self._get_type_name(typ.wrapped)
+                if wrapped_name in conformances:
+                    return protocol in conformances.get(wrapped_name, frozenset())
+
+        # Protocol inheritance - check if protocol inherits from target
+        protocol_hierarchy = {
+            "BinaryInteger": {"Numeric", "Hashable", "Equatable", "Comparable", "Strideable"},
+            "SignedNumeric": {"Numeric"},
+            "UnsignedInteger": {"BinaryInteger", "Numeric"},
+            "FloatingPoint": {"Numeric", "Hashable", "Equatable", "Comparable", "Strideable"},
+            "BinaryFloatingPoint": {"FloatingPoint"},
+            "Collection": {"Sequence"},
+            "MutableCollection": {"Collection", "Sequence"},
+            "BidirectionalCollection": {"Collection", "Sequence"},
+            "RandomAccessCollection": {"BidirectionalCollection", "Collection", "Sequence"},
+            "RangeReplaceableCollection": {"Collection", "Sequence"},
+            "StringProtocol": {"Collection", "Sequence", "Hashable", "Equatable", "Comparable"},
+            "Codable": {"Encodable", "Decodable"},
+        }
+
+        # Check if the type's protocols include something that inherits from target
+        if type_name in conformances:
+            for conformed_protocol in conformances[type_name]:
+                if conformed_protocol in protocol_hierarchy:
+                    if protocol in protocol_hierarchy[conformed_protocol]:
+                        return True
+
+        return False
+
+    def _check_protocol_composition_conformance(
+        self,
+        source: Type,
+        target: SwiftProtocolCompositionType
+    ) -> bool:
+        """Check conformance to a protocol composition (P1 & P2).
+
+        Source must conform to ALL protocols in the composition.
+        """
+        for protocol in target.protocols:
+            if isinstance(protocol, SwiftProtocolType):
+                if not self._check_protocol_conformance(source, protocol):
+                    return False
+            elif isinstance(protocol, SwiftNamedType):
+                # Treat as protocol
+                proto = SwiftProtocolType(protocol.name)
+                if not self._check_protocol_conformance(source, proto):
+                    return False
+            else:
+                # Unknown protocol type
+                return False
+        return True
+
+    def _check_existential_assignable(
+        self,
+        source: Type,
+        target: SwiftExistentialType
+    ) -> bool:
+        """Check if source can be assigned to 'any Protocol' type.
+
+        In Swift 5.6+, existential types are written as 'any Protocol'.
+        Any type that conforms to the protocol can be assigned.
+        """
+        protocol = target.protocol
+        if isinstance(protocol, SwiftProtocolType):
+            return self._check_protocol_conformance(source, protocol)
+        elif isinstance(protocol, SwiftProtocolCompositionType):
+            return self._check_protocol_composition_conformance(source, protocol)
+        elif isinstance(protocol, SwiftNamedType):
+            return self._check_protocol_conformance(source, SwiftProtocolType(protocol.name))
+        return False
+
+    def _check_opaque_assignable(
+        self,
+        source: Type,
+        target: SwiftOpaqueType
+    ) -> bool:
+        """Check if source can satisfy 'some Protocol' constraint.
+
+        Opaque return types (some Protocol) require conformance to the constraint.
+        The key difference from existentials is that opaque types preserve
+        the underlying type identity.
+        """
+        constraint = target.constraint
+        if isinstance(constraint, SwiftProtocolType):
+            return self._check_protocol_conformance(source, constraint)
+        elif isinstance(constraint, SwiftProtocolCompositionType):
+            return self._check_protocol_composition_conformance(source, constraint)
+        elif isinstance(constraint, SwiftNamedType):
+            return self._check_protocol_conformance(source, SwiftProtocolType(constraint.name))
+        return False
+
+    def _check_generic_assignable(
+        self,
+        source: SwiftGenericType,
+        target: SwiftGenericType
+    ) -> bool:
+        """Check generic type assignability.
+
+        Generic types must have matching base types and compatible type arguments.
+        Swift collections are generally covariant for their element types.
+        """
+        if source.base != target.base:
+            return False
+
+        if len(source.type_args) != len(target.type_args):
+            return False
+
+        # Swift standard library collections are covariant
+        covariant_types = {"Array", "Set", "Optional", "Result"}
+        is_covariant = source.base in covariant_types
+
+        for source_arg, target_arg in zip(source.type_args, target.type_args):
+            if is_covariant:
+                if not self.check_assignable(source_arg, target_arg):
+                    return False
+            else:
+                # Invariant by default
+                if source_arg != target_arg:
+                    return False
+
+        return True
+
+    def _check_named_type_assignable(
+        self,
+        source: SwiftNamedType,
+        target: SwiftNamedType
+    ) -> bool:
+        """Check named type assignability.
+
+        Swift uses nominal typing - types must explicitly match or have
+        a declared inheritance/conformance relationship.
+        """
+        # Exact match
+        if source.name == target.name:
+            return True
+
+        # Check known inheritance relationships
+        return self._is_known_subtype(source.name, target.name)
+
+    def _is_known_subtype(self, child: str, parent: str) -> bool:
+        """Check known type hierarchy relationships.
+
+        This provides heuristic subtype checking for common Swift types.
+        Full hierarchy tracking would require parsing type definitions.
+        """
+        hierarchies: Dict[str, FrozenSet[str]] = {
+            # Error types
+            "LocalizedError": frozenset({"Error"}),
+            "DecodingError": frozenset({"Error"}),
+            "EncodingError": frozenset({"Error"}),
+            "URLError": frozenset({"Error"}),
+            "CocoaError": frozenset({"Error"}),
+
+            # Common Foundation hierarchies
+            "NSObject": frozenset({"AnyObject"}),
+            "NSString": frozenset({"NSObject", "AnyObject"}),
+            "NSArray": frozenset({"NSObject", "AnyObject"}),
+            "NSDictionary": frozenset({"NSObject", "AnyObject"}),
+
+            # Number types (not directly inherited but related)
+            "Int": frozenset({"SignedInteger", "BinaryInteger", "Numeric"}),
+            "Double": frozenset({"BinaryFloatingPoint", "FloatingPoint", "Numeric"}),
+        }
+
+        if child in hierarchies:
+            return parent in hierarchies[child]
+
+        return False
+
+    def _check_tuple_assignable(
+        self,
+        source: SwiftTupleType,
+        target: SwiftTupleType
+    ) -> bool:
+        """Check tuple type assignability.
+
+        Tuples must have same arity and assignable element types.
+        Labels are structural - unlabeled can match labeled.
+        """
+        if len(source.elements) != len(target.elements):
+            return False
+
+        for src_elem, tgt_elem in zip(source.elements, target.elements):
+            if not self.check_assignable(src_elem, tgt_elem):
+                return False
+
+        return True
 
     def format_type(self, typ: Type) -> str:
         """Format a type for display."""

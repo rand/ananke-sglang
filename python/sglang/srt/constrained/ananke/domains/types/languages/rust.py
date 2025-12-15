@@ -1123,10 +1123,210 @@ class RustTypeSystem(LanguageTypeSystem):
                 for s, t in zip(source.type_params, target.type_params)
             )
 
+        # Trait bound checking
+        if isinstance(target, RustTraitBound):
+            return self._check_trait_bound_satisfied(source, target)
+
+        if isinstance(source, RustTraitBound):
+            # A type parameter with bounds can be assigned to a compatible bound
+            if isinstance(target, RustTraitBound):
+                return self._check_bounds_compatible(source, target)
+            # Type parameter can be assigned to any type that could satisfy it
+            return True
+
+        # dyn Trait handling
+        if isinstance(target, RustDynTraitType):
+            return self._check_dyn_trait_assignable(source, target)
+
+        # impl Trait handling
+        if isinstance(target, RustImplTraitType):
+            return self._check_impl_trait_assignable(source, target)
+
         # Numeric type promotion (Rust is strict, but allow for inference)
         # In practice, Rust doesn't do implicit numeric coercion
 
         return False
+
+    def _check_trait_bound_satisfied(self, source: Type, bound: RustTraitBound) -> bool:
+        """Check if a concrete type satisfies trait bounds.
+
+        Args:
+            source: The concrete type to check
+            bound: The trait bound to satisfy
+
+        Returns:
+            True if source satisfies all trait bounds
+        """
+        # Check each required trait
+        for trait in bound.trait_bounds:
+            if not self._type_implements_trait(source, trait):
+                return False
+
+        # Lifetime bounds are checked separately (simplified here)
+        # In full Rust, this would involve lifetime analysis
+
+        return True
+
+    def _check_bounds_compatible(self, source: RustTraitBound, target: RustTraitBound) -> bool:
+        """Check if source bounds are compatible with target bounds.
+
+        Source bounds must be at least as restrictive as target bounds
+        for the assignment to be valid.
+
+        Args:
+            source: The source trait bound
+            target: The target trait bound
+
+        Returns:
+            True if bounds are compatible
+        """
+        # Source must have all traits that target requires
+        if not target.trait_bounds.issubset(source.trait_bounds):
+            return False
+
+        # Source must have all lifetime bounds that target requires
+        if not target.lifetime_bounds.issubset(source.lifetime_bounds):
+            return False
+
+        return True
+
+    def _type_implements_trait(self, typ: Type, trait: str) -> bool:
+        """Check if a type implements a specific trait.
+
+        This is a heuristic implementation since we don't have full
+        trait impl tracking.
+
+        Args:
+            typ: The type to check
+            trait: The trait name to check for
+
+        Returns:
+            True if the type likely implements the trait
+        """
+        # Auto traits (marker traits)
+        auto_traits = {"Send", "Sync", "Unpin"}
+        if trait in auto_traits:
+            # Most types implement auto traits by default
+            return self._type_is_auto_trait_safe(typ, trait)
+
+        # Common traits with known implementations
+        trait_impls = {
+            # Clone is implemented by most types
+            "Clone": lambda t: not isinstance(t, RustReferenceType) or not t.is_mutable,
+            # Copy is stricter - only primitives and simple types
+            "Copy": lambda t: isinstance(t, PrimitiveType) or (
+                isinstance(t, TupleType) and all(
+                    self._type_implements_trait(e, "Copy") for e in t.elements
+                )
+            ),
+            # Debug is implemented by most types
+            "Debug": lambda t: True,
+            # Display is implemented by strings and primitives
+            "Display": lambda t: isinstance(t, (PrimitiveType, RustStringType)),
+            # Default
+            "Default": lambda t: isinstance(t, PrimitiveType) or isinstance(t, RustOptionType),
+            # Sized - most types are sized
+            "Sized": lambda t: not isinstance(t, (RustSliceType,)) or isinstance(t, RustReferenceType),
+            # Eq and PartialEq
+            "Eq": lambda t: isinstance(t, PrimitiveType) and t.name not in ("f32", "f64"),
+            "PartialEq": lambda t: True,  # Most types
+            # Ord and PartialOrd
+            "Ord": lambda t: isinstance(t, PrimitiveType) and t.name not in ("f32", "f64"),
+            "PartialOrd": lambda t: isinstance(t, PrimitiveType),
+            # Hash
+            "Hash": lambda t: isinstance(t, PrimitiveType) and t.name not in ("f32", "f64"),
+            # Iterator trait
+            "Iterator": lambda t: isinstance(t, (RustVecType, RustSliceType)),
+            # Into/From traits
+            "Into": lambda t: True,  # All types implement Into<Self>
+            "From": lambda t: True,  # Many types implement From
+            # Error trait
+            "Error": lambda t: (
+                isinstance(t, RustGenericType) and "Error" in (t.name or "")
+            ),
+            # AsRef and AsMut
+            "AsRef": lambda t: True,
+            "AsMut": lambda t: isinstance(t, RustReferenceType) and t.is_mutable,
+            # Deref
+            "Deref": lambda t: isinstance(t, (RustBoxType, RustRcType, RustArcType, RustStringType)),
+            "DerefMut": lambda t: isinstance(t, RustBoxType),
+        }
+
+        if trait in trait_impls:
+            return trait_impls[trait](typ)
+
+        # For unknown traits, be conservative and return False
+        return False
+
+    def _type_is_auto_trait_safe(self, typ: Type, trait: str) -> bool:
+        """Check if a type is safe for auto traits (Send, Sync, Unpin).
+
+        Args:
+            typ: The type to check
+            trait: The auto trait name
+
+        Returns:
+            True if the type is safe for the auto trait
+        """
+        if trait == "Send":
+            # Rc is not Send (thread-unsafe reference counting)
+            if isinstance(typ, RustRcType):
+                return False
+            # Raw pointers are not Send by default
+            if isinstance(typ, RustRawPointerType):
+                return False
+            # Cell/RefCell are not Sync but are Send
+            return True
+
+        if trait == "Sync":
+            # Rc is not Sync
+            if isinstance(typ, RustRcType):
+                return False
+            # Cell/RefCell are not Sync
+            if isinstance(typ, RustGenericType):
+                if typ.name in ("Cell", "RefCell", "UnsafeCell"):
+                    return False
+            return True
+
+        if trait == "Unpin":
+            # Most types are Unpin, except self-referential types
+            return True
+
+        return True
+
+    def _check_dyn_trait_assignable(self, source: Type, target: RustDynTraitType) -> bool:
+        """Check if source can be assigned to dyn Trait.
+
+        Args:
+            source: The source type
+            target: The dyn Trait type
+
+        Returns:
+            True if source implements the required trait
+        """
+        # The trait_name might contain multiple traits separated by +
+        trait_names = [t.strip() for t in target.trait_name.split("+")]
+        for trait in trait_names:
+            if not self._type_implements_trait(source, trait):
+                return False
+        return True
+
+    def _check_impl_trait_assignable(self, source: Type, target: RustImplTraitType) -> bool:
+        """Check if source can be assigned to impl Trait.
+
+        Args:
+            source: The source type
+            target: The impl Trait type
+
+        Returns:
+            True if source implements the required trait
+        """
+        # The trait_name might contain multiple traits separated by +
+        trait_names = [t.strip() for t in target.trait_name.split("+")]
+        for trait in trait_names:
+            if not self._type_implements_trait(source, trait):
+                return False
+        return True
 
     def format_type(self, typ: Type) -> str:
         """Format a type as Rust syntax."""

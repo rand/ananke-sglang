@@ -930,19 +930,290 @@ class ZigTypeSystem(LanguageTypeSystem):
         return ZIG_TYPE
 
     def _parse_struct_literal(self, s: str) -> ZigStructType:
-        """Parse struct{...} literal."""
-        is_packed = s.startswith("packed ")
-        is_extern = s.startswith("extern ")
-        # Simplified - just return empty struct type
-        return ZigStructType(is_packed=is_packed, is_extern=is_extern)
+        """Parse struct{...} literal with field extraction.
+
+        Parses struct definitions like:
+        - struct { x: i32, y: i32 }
+        - packed struct { flags: u8, data: u32 }
+        - extern struct { handle: *anyopaque }
+        """
+        is_packed = "packed" in s[:20]
+        is_extern = "extern" in s[:20]
+
+        # Find the content between braces
+        brace_start = s.find("{")
+        brace_end = s.rfind("}")
+
+        if brace_start == -1 or brace_end == -1:
+            return ZigStructType(is_packed=is_packed, is_extern=is_extern)
+
+        content = s[brace_start + 1:brace_end].strip()
+
+        if not content:
+            return ZigStructType(is_packed=is_packed, is_extern=is_extern)
+
+        # Parse fields
+        fields = self._parse_struct_fields(content)
+
+        return ZigStructType(
+            fields=fields,
+            is_packed=is_packed,
+            is_extern=is_extern,
+        )
+
+    def _parse_struct_fields(self, content: str) -> Tuple[Tuple[str, Type], ...]:
+        """Parse struct field definitions.
+
+        Handles field declarations like:
+        - name: Type
+        - name: Type = default_value
+        - comptime name: Type
+        """
+        fields: List[Tuple[str, Type]] = []
+
+        # Split by comma, respecting nesting
+        field_strs = self._split_fields(content)
+
+        for field_str in field_strs:
+            field_str = field_str.strip()
+            if not field_str:
+                continue
+
+            # Skip functions and decls
+            if field_str.startswith("fn ") or field_str.startswith("const "):
+                continue
+
+            # Remove comptime prefix if present
+            if field_str.startswith("comptime "):
+                field_str = field_str[9:].strip()
+
+            # Find the colon separating name from type
+            colon_idx = field_str.find(":")
+            if colon_idx == -1:
+                continue
+
+            field_name = field_str[:colon_idx].strip()
+
+            # Handle default values: name: Type = value
+            type_part = field_str[colon_idx + 1:].strip()
+            eq_idx = self._find_default_value_eq(type_part)
+            if eq_idx != -1:
+                type_part = type_part[:eq_idx].strip()
+
+            # Skip invalid field names
+            if not field_name or not self._is_valid_identifier(field_name):
+                continue
+
+            try:
+                field_type = self._parse_type(type_part)
+                fields.append((field_name, field_type))
+            except (TypeParseError, ValueError):
+                # Skip unparseable fields
+                continue
+
+        return tuple(fields)
+
+    def _find_default_value_eq(self, s: str) -> int:
+        """Find = for default value, not inside nested expressions."""
+        depth = 0
+        for i, c in enumerate(s):
+            if c in "([{":
+                depth += 1
+            elif c in ")]}":
+                depth -= 1
+            elif c == "=" and depth == 0:
+                return i
+        return -1
+
+    def _split_fields(self, content: str) -> List[str]:
+        """Split struct/union/enum content by commas, respecting nesting."""
+        fields: List[str] = []
+        current: List[str] = []
+        depth = 0
+
+        for c in content:
+            if c in "([{":
+                depth += 1
+                current.append(c)
+            elif c in ")]}":
+                depth -= 1
+                current.append(c)
+            elif c == "," and depth == 0:
+                fields.append("".join(current))
+                current = []
+            else:
+                current.append(c)
+
+        if current:
+            fields.append("".join(current))
+
+        return fields
 
     def _parse_enum_literal(self, s: str) -> ZigEnumType:
-        """Parse enum{...} or enum(tag){...}."""
-        return ZigEnumType()
+        """Parse enum{...} or enum(tag){...} with variant extraction.
+
+        Parses enum definitions like:
+        - enum { foo, bar, baz }
+        - enum(u8) { a, b, c }
+        """
+        is_extern = "extern" in s[:20]
+
+        # Check for tag type: enum(tag_type)
+        tag_type: Optional[Type] = None
+        tag_start = s.find("(")
+        brace_start = s.find("{")
+
+        if tag_start != -1 and tag_start < brace_start:
+            tag_end = s.find(")", tag_start)
+            if tag_end != -1:
+                tag_str = s[tag_start + 1:tag_end].strip()
+                try:
+                    tag_type = self._parse_type(tag_str)
+                except (TypeParseError, ValueError):
+                    pass
+
+        # Find the content between braces
+        brace_end = s.rfind("}")
+
+        if brace_start == -1 or brace_end == -1:
+            return ZigEnumType(tag_type=tag_type, is_extern=is_extern)
+
+        content = s[brace_start + 1:brace_end].strip()
+
+        if not content:
+            return ZigEnumType(tag_type=tag_type, is_extern=is_extern)
+
+        # Parse variants
+        variants = self._parse_enum_variants(content)
+
+        return ZigEnumType(
+            tag_type=tag_type,
+            variants=variants,
+            is_extern=is_extern,
+        )
+
+    def _parse_enum_variants(self, content: str) -> FrozenSet[str]:
+        """Parse enum variant names.
+
+        Handles variants like:
+        - simple_name
+        - name = value
+        """
+        variants: Set[str] = set()
+
+        variant_strs = self._split_fields(content)
+
+        for variant_str in variant_strs:
+            variant_str = variant_str.strip()
+            if not variant_str:
+                continue
+
+            # Skip functions
+            if variant_str.startswith("fn "):
+                continue
+
+            # Handle value assignment: name = value
+            eq_idx = variant_str.find("=")
+            if eq_idx != -1:
+                variant_str = variant_str[:eq_idx].strip()
+
+            # Extract variant name
+            if self._is_valid_identifier(variant_str):
+                variants.add(variant_str)
+
+        return frozenset(variants)
 
     def _parse_union_literal(self, s: str) -> ZigUnionType:
-        """Parse union{...} or union(tag){...}."""
-        return ZigUnionType()
+        """Parse union{...} or union(tag){...} with variant extraction.
+
+        Parses union definitions like:
+        - union { value: i32, ptr: *u8 }
+        - union(enum) { a: i32, b: f64 }
+        """
+        is_packed = "packed" in s[:20]
+        is_extern = "extern" in s[:20]
+
+        # Check for tag type: union(tag_type)
+        tag_type: Optional[Type] = None
+        tag_start = s.find("(")
+        brace_start = s.find("{")
+
+        if tag_start != -1 and tag_start < brace_start:
+            tag_end = s.find(")", tag_start)
+            if tag_end != -1:
+                tag_str = s[tag_start + 1:tag_end].strip()
+                if tag_str == "enum":
+                    # union(enum) - auto-generated tag
+                    tag_type = ZigEnumType()
+                else:
+                    try:
+                        tag_type = self._parse_type(tag_str)
+                    except (TypeParseError, ValueError):
+                        pass
+
+        # Find the content between braces
+        brace_end = s.rfind("}")
+
+        if brace_start == -1 or brace_end == -1:
+            return ZigUnionType(tag_type=tag_type, is_packed=is_packed, is_extern=is_extern)
+
+        content = s[brace_start + 1:brace_end].strip()
+
+        if not content:
+            return ZigUnionType(tag_type=tag_type, is_packed=is_packed, is_extern=is_extern)
+
+        # Parse variants (same format as struct fields for typed unions)
+        variants = self._parse_union_variants(content)
+
+        return ZigUnionType(
+            tag_type=tag_type,
+            variants=variants,
+            is_packed=is_packed,
+            is_extern=is_extern,
+        )
+
+    def _parse_union_variants(self, content: str) -> Tuple[Tuple[str, Type], ...]:
+        """Parse union variant definitions.
+
+        Handles variants like:
+        - name: Type
+        - name: void (for enum-like variants)
+        """
+        variants: List[Tuple[str, Type]] = []
+
+        variant_strs = self._split_fields(content)
+
+        for variant_str in variant_strs:
+            variant_str = variant_str.strip()
+            if not variant_str:
+                continue
+
+            # Skip functions
+            if variant_str.startswith("fn "):
+                continue
+
+            # Find the colon separating name from type
+            colon_idx = variant_str.find(":")
+            if colon_idx == -1:
+                # Bare name - treat as void type
+                if self._is_valid_identifier(variant_str):
+                    variants.append((variant_str, ZIG_VOID))
+                continue
+
+            variant_name = variant_str[:colon_idx].strip()
+            type_part = variant_str[colon_idx + 1:].strip()
+
+            if not variant_name or not self._is_valid_identifier(variant_name):
+                continue
+
+            try:
+                variant_type = self._parse_type(type_part)
+                variants.append((variant_name, variant_type))
+            except (TypeParseError, ValueError):
+                # Treat as void if unparseable
+                variants.append((variant_name, ZIG_VOID))
+
+        return tuple(variants)
 
     def _parse_error_set(self, s: str) -> ErrorSetType:
         """Parse error{A, B, C}."""
@@ -1143,24 +1414,177 @@ class ZigTypeSystem(LanguageTypeSystem):
         if isinstance(source, ErrorSetType) and isinstance(target, ErrorSetType):
             return self._check_error_set_assignable(source, target)
 
-        # Struct/enum/union assignability by name
+        # Struct/enum/union assignability
         if isinstance(source, ZigStructType) and isinstance(target, ZigStructType):
-            if source.name and target.name:
-                return source.name == target.name
+            return self._check_struct_assignable(source, target)
 
         if isinstance(source, ZigEnumType) and isinstance(target, ZigEnumType):
-            if source.name and target.name:
-                return source.name == target.name
+            return self._check_enum_assignable(source, target)
 
         if isinstance(source, ZigUnionType) and isinstance(target, ZigUnionType):
-            if source.name and target.name:
-                return source.name == target.name
+            return self._check_union_assignable(source, target)
+
+        # Vector type assignability
+        if isinstance(source, ZigVectorType) and isinstance(target, ZigVectorType):
+            return self._check_vector_assignable(source, target)
 
         # Function type compatibility
         if isinstance(source, ZigFunctionType) and isinstance(target, ZigFunctionType):
             return self._check_function_assignable(source, target)
 
         return False
+
+    def _check_struct_assignable(self, source: ZigStructType, target: ZigStructType) -> bool:
+        """Check struct type assignability.
+
+        Zig uses nominal typing for named structs but structural typing
+        for anonymous structs. Rules:
+        - Named structs: must have same name
+        - Anonymous structs: structural compatibility (all target fields present in source)
+        """
+        # Named structs use nominal typing
+        if source.name and target.name:
+            return source.name == target.name
+
+        # Named source to anonymous target - check structural compatibility
+        if target.fields and source.fields:
+            return self._check_struct_fields_compatible(source.fields, target.fields)
+
+        # Anonymous to named - not allowed without explicit cast
+        if not source.name and target.name:
+            return False
+
+        # Named source to empty anonymous target - allowed
+        if source.name and not target.fields:
+            return True
+
+        # Both anonymous - structural compatibility
+        if not source.name and not target.name:
+            if target.fields:
+                return self._check_struct_fields_compatible(source.fields, target.fields)
+            return True  # Empty target accepts anything
+
+        return False
+
+    def _check_struct_fields_compatible(
+        self,
+        source_fields: Tuple[Tuple[str, Type], ...],
+        target_fields: Tuple[Tuple[str, Type], ...]
+    ) -> bool:
+        """Check if source struct has all required target fields with compatible types.
+
+        Structural subtyping: source can have extra fields, but must have all
+        target fields with assignable types.
+        """
+        source_field_map = {name: typ for name, typ in source_fields}
+
+        for field_name, target_type in target_fields:
+            if field_name not in source_field_map:
+                return False
+            if not self.check_assignable(source_field_map[field_name], target_type):
+                return False
+
+        return True
+
+    def _check_enum_assignable(self, source: ZigEnumType, target: ZigEnumType) -> bool:
+        """Check enum type assignability.
+
+        Zig uses nominal typing for named enums.
+        - Named enums: must have same name
+        - Anonymous enums: structural compatibility (source variants subset of target)
+        """
+        # Named enums use nominal typing
+        if source.name and target.name:
+            return source.name == target.name
+
+        # Check tag type compatibility
+        if source.tag_type and target.tag_type:
+            if not self.check_assignable(source.tag_type, target.tag_type):
+                return False
+
+        # Anonymous enum assignability - source variants must be subset
+        if source.variants and target.variants:
+            return source.variants.issubset(target.variants)
+
+        # Empty variants treated as compatible
+        return True
+
+    def _check_union_assignable(self, source: ZigUnionType, target: ZigUnionType) -> bool:
+        """Check union type assignability.
+
+        Zig uses nominal typing for named unions.
+        - Tagged unions: source variants must be subset with compatible payload types
+        - Bare unions: less strict, based on memory layout
+        """
+        # Named unions use nominal typing
+        if source.name and target.name:
+            return source.name == target.name
+
+        # Check tag type compatibility for tagged unions
+        if source.tag_type and target.tag_type:
+            if not self.check_assignable(source.tag_type, target.tag_type):
+                return False
+
+        # Check variant compatibility
+        if source.variants and target.variants:
+            return self._check_union_variants_compatible(source.variants, target.variants)
+
+        return True
+
+    def _check_union_variants_compatible(
+        self,
+        source_variants: Tuple[Tuple[str, Type], ...],
+        target_variants: Tuple[Tuple[str, Type], ...]
+    ) -> bool:
+        """Check if source union variants are compatible with target.
+
+        For tagged unions, source must have all target variants with
+        assignable payload types.
+        """
+        source_variant_map = {name: typ for name, typ in source_variants}
+        target_variant_map = {name: typ for name, typ in target_variants}
+
+        # Source must have at least the target's variants
+        for variant_name, target_type in target_variant_map.items():
+            if variant_name not in source_variant_map:
+                return False
+            if not self.check_assignable(source_variant_map[variant_name], target_type):
+                return False
+
+        return True
+
+    def _check_vector_assignable(self, source: ZigVectorType, target: ZigVectorType) -> bool:
+        """Check SIMD vector type assignability.
+
+        Vectors must have same length and compatible element types.
+        """
+        if source.length != target.length:
+            return False
+        return self.check_assignable(source.element, target.element)
+
+    def get_struct_field_type(self, struct_type: ZigStructType, field_name: str) -> Optional[Type]:
+        """Get the type of a struct field by name.
+
+        Useful for field access type checking.
+        """
+        for name, typ in struct_type.fields:
+            if name == field_name:
+                return typ
+        return None
+
+    def get_union_variant_type(self, union_type: ZigUnionType, variant_name: str) -> Optional[Type]:
+        """Get the payload type of a union variant by name.
+
+        Useful for switch/payload capture type checking.
+        """
+        for name, typ in union_type.variants:
+            if name == variant_name:
+                return typ
+        return None
+
+    def has_enum_variant(self, enum_type: ZigEnumType, variant_name: str) -> bool:
+        """Check if an enum has a specific variant."""
+        return variant_name in enum_type.variants
 
     def _is_integer_type(self, typ: Type) -> bool:
         """Check if type is an integer type."""
