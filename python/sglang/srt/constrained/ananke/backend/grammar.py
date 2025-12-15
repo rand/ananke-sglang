@@ -818,3 +818,204 @@ class AnankeGrammar(BaseGrammarObject):
         """
         stats = self.get_cache_stats()
         logger.debug(f"AnankeGrammar cache stats: {stats}")
+
+    # =========================================================================
+    # Speculative Decoding Support
+    # =========================================================================
+
+    def verify_draft_tokens(
+        self,
+        draft_tokens: List[int],
+        return_first_invalid: bool = True,
+    ) -> Tuple[int, Optional[UnifiedConstraint]]:
+        """Verify draft tokens against constraints for speculative decoding.
+
+        This method efficiently verifies a sequence of draft tokens from
+        a draft model without permanently updating grammar state. It enables
+        speculative decoding by determining how many draft tokens are valid.
+
+        The verification is performed by:
+        1. Saving current state
+        2. Processing tokens one by one
+        3. Checking constraint validity after each token
+        4. Restoring original state after verification
+
+        Args:
+            draft_tokens: List of draft token IDs to verify
+            return_first_invalid: If True, return immediately on first invalid token.
+                If False, continue to find all valid tokens.
+
+        Returns:
+            Tuple of (num_valid_tokens, constraint_at_rejection):
+            - num_valid_tokens: Number of tokens that pass constraint checking
+            - constraint_at_rejection: Constraint state when first invalid token
+              was encountered, or None if all tokens valid
+
+        Example:
+            >>> grammar = AnankeGrammar(...)
+            >>> draft_tokens = [1234, 5678, 9012]  # From draft model
+            >>> num_valid, rejection_constraint = grammar.verify_draft_tokens(draft_tokens)
+            >>> # Accept first num_valid tokens, discard rest
+        """
+        if not draft_tokens:
+            return 0, None
+
+        # Save current state for restoration
+        saved_constraint = self.constraint
+        saved_context = GenerationContext(
+            generated_text=self.context.generated_text,
+            generated_tokens=self.context.generated_tokens.copy(),
+            position=self.context.position,
+            vocab_size=self.vocab_size,
+            device=self.device,
+            language=self.language,
+            tokenizer=self.tokenizer,
+            metadata=self.context.metadata.copy(),
+            mask_pool=self._mask_pool,
+        )
+        saved_mask_cache = self._domain_mask_cache.copy()
+        saved_finished = self.finished
+
+        # Track syntax grammar state if available
+        syntax_state_saved = False
+        if self.syntax_grammar is not None and hasattr(self.syntax_grammar, 'copy'):
+            # Some grammar objects support copying for state preservation
+            syntax_grammar_copy = self.syntax_grammar.copy()
+            syntax_state_saved = True
+
+        num_valid = 0
+        rejection_constraint: Optional[UnifiedConstraint] = None
+
+        try:
+            for i, token in enumerate(draft_tokens):
+                # Check if token would be valid before accepting
+                if not self._is_token_valid_for_draft(token):
+                    rejection_constraint = self.constraint
+                    break
+
+                # Accept token (updates state)
+                self.accept_token(token)
+
+                # Check if constraint became unsatisfiable
+                if self.finished or self.constraint.satisfiability() == Satisfiability.UNSAT:
+                    rejection_constraint = self.constraint
+                    break
+
+                num_valid += 1
+
+                if return_first_invalid and self.finished:
+                    break
+
+        finally:
+            # Restore original state
+            self.constraint = saved_constraint
+            self.context = saved_context
+            self._domain_mask_cache = saved_mask_cache
+            self.finished = saved_finished
+
+            # Restore syntax grammar state if we saved it
+            if syntax_state_saved:
+                self.syntax_grammar = syntax_grammar_copy
+
+        return num_valid, rejection_constraint
+
+    def _is_token_valid_for_draft(self, token: int) -> bool:
+        """Check if a token is valid under current constraints.
+
+        This is a lightweight check for speculative decoding that doesn't
+        compute full masks. It checks if the token is allowed by each
+        domain's constraint.
+
+        Args:
+            token: Token ID to check
+
+        Returns:
+            True if token is valid under all constraints
+        """
+        # Check syntax grammar first (if available)
+        if self.syntax_grammar is not None:
+            # Get syntax mask
+            try:
+                # Allocate a small mask for single-token check
+                mask_size = (self.vocab_size + 31) // 32
+                vocab_mask = torch.zeros(
+                    (1, mask_size), dtype=torch.int32, device=self.device
+                )
+                self.syntax_grammar.fill_vocab_mask(vocab_mask, 0)
+
+                # Check if token is allowed
+                word_idx = token // 32
+                bit_idx = token % 32
+                if word_idx < mask_size:
+                    if not (vocab_mask[0, word_idx] & (1 << bit_idx)):
+                        return False
+            except Exception as e:
+                logger.debug(f"Syntax check failed for token {token}: {e}")
+                # On error, assume valid (soundness)
+                pass
+
+        # Check each domain constraint
+        for domain_name, domain in self.domains.items():
+            if domain_name == "syntax":
+                continue  # Already checked above
+
+            # Get domain constraint (safely handle unknown domains)
+            domain_constraint = getattr(self.constraint, domain_name, None)
+            if domain_constraint is None:
+                # Unknown domain - compute mask directly
+                try:
+                    mask = domain.token_mask(None, self.context)
+                    if mask is not None and token < len(mask) and not mask[token]:
+                        return False
+                except Exception as e:
+                    logger.debug(f"Domain {domain_name} mask computation failed: {e}")
+                continue
+
+            if domain_constraint.is_top():
+                continue  # No constraint
+
+            try:
+                # Get domain mask
+                mask = domain.token_mask(domain_constraint, self.context)
+                if mask is not None and token < len(mask) and not mask[token]:
+                    return False
+            except Exception as e:
+                logger.debug(f"Domain {domain_name} check failed for token {token}: {e}")
+                # On error, assume valid (soundness: don't block valid tokens)
+                pass
+
+        return True
+
+    def verify_draft_batch(
+        self,
+        draft_sequences: List[List[int]],
+    ) -> List[Tuple[int, Optional[UnifiedConstraint]]]:
+        """Verify multiple draft sequences in batch.
+
+        Convenience method for verifying multiple draft sequences.
+        Currently processes sequentially; future optimization could
+        parallelize across sequences.
+
+        Args:
+            draft_sequences: List of draft token sequences
+
+        Returns:
+            List of (num_valid, rejection_constraint) tuples
+        """
+        results = []
+        for draft_tokens in draft_sequences:
+            result = self.verify_draft_tokens(draft_tokens)
+            results.append(result)
+        return results
+
+    def get_speculative_stats(self) -> Dict[str, Any]:
+        """Get statistics about speculative decoding verification.
+
+        Returns:
+            Dictionary with speculative decoding statistics
+        """
+        return {
+            "supported": True,
+            "syntax_grammar_available": self.syntax_grammar is not None,
+            "active_domains": list(self.domains.keys()),
+        }
