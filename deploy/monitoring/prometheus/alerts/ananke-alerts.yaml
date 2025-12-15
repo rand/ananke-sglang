@@ -1,0 +1,150 @@
+# Prometheus Alert Rules for SGLang Ananke
+
+groups:
+  - name: sglang-ananke
+    rules:
+      # =======================================================================
+      # Service Health
+      # =======================================================================
+
+      - alert: SGLangServerDown
+        expr: up{job="sglang"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SGLang server is down"
+          description: "SGLang server has been unreachable for more than 1 minute."
+
+      - alert: SGLangHighLatency
+        expr: histogram_quantile(0.95, rate(sglang_request_duration_seconds_bucket[5m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High request latency"
+          description: "95th percentile latency is above 30 seconds for 5 minutes."
+
+      - alert: SGLangErrorRateHigh
+        expr: rate(sglang_requests_total{status="error"}[5m]) / rate(sglang_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate"
+          description: "Error rate is above 5% for 5 minutes."
+
+      # =======================================================================
+      # Ananke Constraint Engine
+      # =======================================================================
+
+      - alert: AnankeConstraintViolationsHigh
+        expr: rate(sglang_ananke_constraint_violations_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High constraint violation rate"
+          description: "Ananke constraint violations are above 10/s for 5 minutes. Check grammar configurations."
+
+      - alert: AnankeRollbacksHigh
+        expr: rate(sglang_ananke_rollbacks_total[5m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rollback rate"
+          description: "Ananke rollbacks are above 20/s. Consider increasing max_rollback_tokens."
+
+      - alert: AnankeGrammarCacheMissHigh
+        expr: rate(sglang_ananke_cache_misses_total[5m]) / (rate(sglang_ananke_cache_hits_total[5m]) + rate(sglang_ananke_cache_misses_total[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "Low grammar cache hit rate"
+          description: "Grammar cache hit rate is below 50%. Consider warming up the cache."
+
+      # =======================================================================
+      # GPU Resources
+      # =======================================================================
+
+      - alert: GPUMemoryHigh
+        expr: nvidia_gpu_memory_used_bytes / nvidia_gpu_memory_total_bytes > 0.95
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU memory utilization high"
+          description: "GPU memory utilization is above 95%. Risk of OOM errors."
+
+      - alert: GPUTemperatureHigh
+        expr: nvidia_gpu_temperature_celsius > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU temperature high"
+          description: "GPU temperature is above 85°C. Check cooling."
+
+      - alert: GPUUtilizationLow
+        expr: avg_over_time(nvidia_gpu_utilization[10m]) < 10
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "GPU underutilized"
+          description: "GPU utilization has been below 10% for 30 minutes. Consider scaling down."
+
+      # =======================================================================
+      # System Resources
+      # =======================================================================
+
+      - alert: HighCPUUsage
+        expr: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is above 90% for 10 minutes."
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is above 90% for 10 minutes."
+
+      - alert: DiskSpaceLow
+        expr: (1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space low"
+          description: "Disk space usage is above 85%."
+
+      # =======================================================================
+      # Request Queue
+      # =======================================================================
+
+      - alert: RequestQueueBacklog
+        expr: sglang_requests_queued > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Request queue backlog"
+          description: "More than 100 requests queued for 5 minutes. Consider scaling up."
+
+      - alert: RequestQueueTimeout
+        expr: rate(sglang_requests_timeout_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Request timeouts occurring"
+          description: "Requests are timing out at rate > 1/s."

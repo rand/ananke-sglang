@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sglang-ananke.fullname" . }}
+  labels:
+    {{- include "sglang-ananke.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ .Values.server.port }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "sglang-ananke.selectorLabels" . | nindent 4 }}
+---
+{{- if .Values.useStatefulSet }}
+# Headless service for StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "sglang-ananke.fullname" . }}-headless
+  labels:
+    {{- include "sglang-ananke.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: {{ .Values.server.port }}
+      targetPort: {{ .Values.server.port }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "sglang-ananke.selectorLabels" . | nindent 4 }}
+{{- end }}

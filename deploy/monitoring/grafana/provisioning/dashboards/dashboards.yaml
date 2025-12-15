@@ -1,0 +1,13 @@
+# Grafana Dashboard Provisioning
+
+apiVersion: 1
+
+providers:
+  - name: 'SGLang Ananke'
+    orgId: 1
+    folder: 'SGLang'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

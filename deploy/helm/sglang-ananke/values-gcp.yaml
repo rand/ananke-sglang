@@ -1,0 +1,64 @@
+# GCP-specific values for sglang-ananke
+# Usage: helm install sglang ./sglang-ananke -f values-gcp.yaml
+
+# GKE Autopilot / Standard cluster settings
+nodeSelector:
+  cloud.google.com/gke-accelerator: nvidia-tesla-a100
+  # For L4 GPUs:
+  # cloud.google.com/gke-accelerator: nvidia-l4
+
+tolerations:
+  - key: "nvidia.com/gpu"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# GCS-backed model storage (using Filestore or GCS FUSE)
+modelVolume:
+  enabled: true
+  type: pvc
+  pvc:
+    size: 200Gi
+    storageClassName: premium-rwo  # SSD-backed persistent disk
+    accessModes:
+      - ReadWriteOnce
+
+# GKE Ingress
+ingress:
+  enabled: true
+  className: gce
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: sglang-ip
+    networking.gke.io/managed-certificates: sglang-cert
+  hosts:
+    - host: sglang.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+# Backend config for GKE
+service:
+  type: ClusterIP
+  annotations:
+    cloud.google.com/backend-config: '{"default": "sglang-backend-config"}'
+    cloud.google.com/neg: '{"ingress": true}'
+
+# GKE HPA with custom metrics from Cloud Monitoring
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 80
+
+# Workload Identity for accessing GCS
+serviceAccount:
+  create: true
+  annotations:
+    iam.gke.io/gcp-service-account: sglang-sa@PROJECT_ID.iam.gserviceaccount.com
+
+# Additional GCP-specific environment
+extraEnv:
+  - name: GOOGLE_CLOUD_PROJECT
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.namespace

@@ -1,0 +1,100 @@
+# SGLang Ananke Full Image
+# Extends the base SGLang runtime with all Ananke optional dependencies
+#
+# Build variants:
+#   Full (default):    docker build -f Dockerfile.ananke -t sglang-ananke:latest ..
+#   With Zig native:   docker build -f Dockerfile.ananke --build-arg BUILD_ZIG_NATIVE=1 -t sglang-ananke:native ..
+#
+# Build from repo root:
+#   docker build -f deploy/docker/Dockerfile.ananke -t sglang-ananke:latest .
+
+ARG BASE_IMAGE=lmsysorg/sglang:latest
+ARG BUILD_ZIG_NATIVE=0
+
+# =============================================================================
+# Stage 1: Ananke Dependencies
+# =============================================================================
+FROM ${BASE_IMAGE} AS ananke-deps
+
+# Install Ananke optional dependencies for enhanced constraint checking
+# These are optional but enable:
+# - z3-solver: Satisfiability checking for complex semantic constraints
+# - tree-sitter: Advanced syntax analysis and incremental parsing
+# - immutables: Efficient immutable data structures for checkpointing
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir \
+        "z3-solver>=4.12.0" \
+        "tree-sitter>=0.22.0" \
+        "immutables>=0.20"
+
+# =============================================================================
+# Stage 2: Zig Native Build (Optional)
+# =============================================================================
+FROM ananke-deps AS zig-builder
+
+ARG BUILD_ZIG_NATIVE
+
+# Install Zig compiler if building native library
+RUN if [ "$BUILD_ZIG_NATIVE" = "1" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            xz-utils \
+        && ZIG_VERSION=0.13.0 \
+        && ARCH=$(uname -m) \
+        && case "$ARCH" in \
+            x86_64) ZIG_ARCH="x86_64" ;; \
+            aarch64) ZIG_ARCH="aarch64" ;; \
+            *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
+        esac \
+        && curl -fsSL -o zig.tar.xz \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" \
+        && tar -xJf zig.tar.xz \
+        && mv zig-linux-${ZIG_ARCH}-${ZIG_VERSION} /opt/zig \
+        && ln -s /opt/zig/zig /usr/local/bin/zig \
+        && rm zig.tar.xz \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# Build Zig SIMD mask fusion library
+RUN if [ "$BUILD_ZIG_NATIVE" = "1" ] && [ -d /sgl-workspace/sglang/python/sglang/srt/constrained/ananke/zig ]; then \
+        cd /sgl-workspace/sglang/python/sglang/srt/constrained/ananke/zig \
+        && zig build -Doptimize=ReleaseFast \
+        && echo "Zig native library built successfully"; \
+    fi
+
+# =============================================================================
+# Stage 3: Final Ananke Image
+# =============================================================================
+FROM ananke-deps AS ananke
+
+ARG BUILD_ZIG_NATIVE
+
+# Copy Zig native library if built
+COPY --from=zig-builder /sgl-workspace/sglang/python/sglang/srt/constrained/ananke/zig/zig-out/lib/* \
+    /sgl-workspace/sglang/python/sglang/srt/constrained/ananke/zig/zig-out/lib/ 2>/dev/null || true
+
+# Set default Ananke environment variables
+ENV SGLANG_GRAMMAR_BACKEND=ananke \
+    ANANKE_LANGUAGE=python \
+    ANANKE_MAX_ROLLBACK_TOKENS=200
+
+# Verify Ananke installation
+RUN python3 -c "from sglang.srt.constrained.ananke import AnankeGrammar; print('Ananke backend available')"
+
+# Labels for image metadata
+LABEL org.opencontainers.image.title="SGLang with Ananke Backend" \
+      org.opencontainers.image.description="SGLang inference server with Ananke constrained generation backend" \
+      org.opencontainers.image.source="https://github.com/sgl-project/sglang" \
+      org.opencontainers.image.vendor="SGLang Project"
+
+WORKDIR /sgl-workspace/sglang
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:${SGLANG_PORT:-30000}/health || exit 1
+
+# Default command
+CMD ["python3", "-m", "sglang.launch_server", \
+     "--model-path", "${MODEL_PATH:-meta-llama/Llama-3.1-8B-Instruct}", \
+     "--host", "0.0.0.0", \
+     "--port", "30000", \
+     "--grammar-backend", "ananke"]

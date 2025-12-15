@@ -1,0 +1,17 @@
+{{- if and .Values.modelVolume.enabled (eq .Values.modelVolume.type "pvc") (not .Values.modelVolume.pvc.existingClaim) (not .Values.useStatefulSet) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "sglang-ananke.fullname" . }}-model-cache
+  labels:
+    {{- include "sglang-ananke.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.modelVolume.pvc.accessModes | nindent 4 }}
+  {{- if .Values.modelVolume.pvc.storageClassName }}
+  storageClassName: {{ .Values.modelVolume.pvc.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.modelVolume.pvc.size }}
+{{- end }}

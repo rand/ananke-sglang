@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "sglang-ananke.fullname" . }}-config
+  labels:
+    {{- include "sglang-ananke.labels" . | nindent 4 }}
+data:
+  # Server configuration
+  SGLANG_PORT: {{ .Values.server.port | quote }}
+  SGLANG_TP_SIZE: {{ .Values.server.tpSize | quote }}
+  SGLANG_MEM_FRACTION: {{ .Values.server.memFraction | quote }}
+  SGLANG_LOG_LEVEL: {{ .Values.server.logLevel | quote }}
+  SGLANG_ENABLE_METRICS: {{ .Values.server.enableMetrics | quote }}
+
+  # Ananke configuration
+  {{- if .Values.ananke.enabled }}
+  SGLANG_GRAMMAR_BACKEND: "ananke"
+  ANANKE_LANGUAGE: {{ .Values.ananke.language | quote }}
+  ANANKE_MAX_ROLLBACK_TOKENS: {{ .Values.ananke.maxRollbackTokens | quote }}
+  {{- if .Values.ananke.enabledDomains }}
+  ANANKE_ENABLED_DOMAINS: {{ .Values.ananke.enabledDomains | quote }}
+  {{- end }}
+  {{- if .Values.ananke.defaultConstraintSpec }}
+  ANANKE_DEFAULT_CONSTRAINT_SPEC: {{ .Values.ananke.defaultConstraintSpec | quote }}
+  {{- end }}
+  {{- end }}
+
+  # Model configuration
+  MODEL_PATH: {{ .Values.model.path | quote }}

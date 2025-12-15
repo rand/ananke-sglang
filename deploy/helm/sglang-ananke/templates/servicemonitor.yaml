@@ -1,0 +1,26 @@
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "sglang-ananke.fullname" . }}
+  {{- if .Values.monitoring.serviceMonitor.namespace }}
+  namespace: {{ .Values.monitoring.serviceMonitor.namespace }}
+  {{- end }}
+  labels:
+    {{- include "sglang-ananke.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.serviceMonitor.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "sglang-ananke.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+{{- end }}

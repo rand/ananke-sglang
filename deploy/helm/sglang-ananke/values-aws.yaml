@@ -1,0 +1,80 @@
+# AWS-specific values for sglang-ananke
+# Usage: helm install sglang ./sglang-ananke -f values-aws.yaml
+
+# EKS node selection for GPU instances
+nodeSelector:
+  node.kubernetes.io/instance-type: p4d.24xlarge
+  # Alternative GPU instances:
+  # node.kubernetes.io/instance-type: g5.xlarge    # A10G
+  # node.kubernetes.io/instance-type: p3.2xlarge   # V100
+
+tolerations:
+  - key: "nvidia.com/gpu"
+    operator: "Exists"
+    effect: "NoSchedule"
+  - key: "aws.amazon.com/neuron"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# EBS-backed storage
+modelVolume:
+  enabled: true
+  type: pvc
+  pvc:
+    size: 200Gi
+    storageClassName: gp3  # EBS GP3 volumes
+    accessModes:
+      - ReadWriteOnce
+
+# AWS ALB Ingress
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "10"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+    # SSL certificate
+    # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:region:account:certificate/xxx
+    # alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    # alb.ingress.kubernetes.io/ssl-redirect: "443"
+  hosts:
+    - host: sglang.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+service:
+  type: ClusterIP
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: external
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+
+# Karpenter-compatible autoscaling
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 80
+
+# IRSA (IAM Roles for Service Accounts) for S3 access
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/sglang-s3-access
+
+# EKS-specific environment
+extraEnv:
+  - name: AWS_REGION
+    value: us-west-2
+  - name: AWS_DEFAULT_REGION
+    value: us-west-2
+
+# Pod annotations for EKS
+podAnnotations:
+  cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
