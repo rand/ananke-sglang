@@ -44,7 +44,7 @@ pub const Language = enum(u8) {
     TypeScript = 1,
     Rust = 2,
     Go = 3,
-    Java = 4,
+    Kotlin = 4,
     Zig = 5,
     Swift = 6,
 };

@@ -7,6 +7,10 @@
 const std = @import("std");
 const mask_fusion = @import("mask_fusion.zig");
 const classifier = @import("classifier.zig");
+const vocab_partition = @import("vocab_partition.zig");
+const type_mask = @import("type_mask.zig");
+const constraint_prop = @import("constraint_prop.zig");
+const parallel_fusion = @import("parallel_fusion.zig");
 
 /// Export: Fuse multiple masks using SIMD-accelerated bitwise AND
 ///
@@ -186,4 +190,140 @@ export fn ananke_is_zig_keyword(
     len: usize,
 ) callconv(.C) bool {
     return classifier.isZigKeyword(str[0..len]);
+}
+
+// =============================================================================
+// Type Mask FFI
+// =============================================================================
+
+/// Export: Compute type mask intersection
+export fn ananke_intersect_type_masks(
+    mask1: [*]const u32,
+    mask2: [*]const u32,
+    mask_size: usize,
+    result: [*]u32,
+) callconv(.C) void {
+    type_mask.intersectTypeMasks(mask1[0..mask_size], mask2[0..mask_size], mask_size, result[0..mask_size]);
+}
+
+/// Export: Compute type mask union
+export fn ananke_union_type_masks(
+    mask1: [*]const u32,
+    mask2: [*]const u32,
+    mask_size: usize,
+    result: [*]u32,
+) callconv(.C) void {
+    type_mask.unionTypeMasks(mask1[0..mask_size], mask2[0..mask_size], mask_size, result[0..mask_size]);
+}
+
+/// Export: Invert type mask
+export fn ananke_invert_type_mask(
+    mask: [*]const u32,
+    mask_size: usize,
+    result: [*]u32,
+) callconv(.C) void {
+    type_mask.invertTypeMask(mask[0..mask_size], mask_size, result[0..mask_size]);
+}
+
+/// Export: Count allowed tokens in mask
+export fn ananke_count_allowed_tokens(
+    mask: [*]const u32,
+    mask_size: usize,
+) callconv(.C) u64 {
+    return type_mask.countAllowedTokens(mask[0..mask_size], mask_size);
+}
+
+/// Export: Check if token is allowed in mask
+export fn ananke_is_token_allowed(
+    mask: [*]const u32,
+    mask_size: usize,
+    token_id: usize,
+) callconv(.C) bool {
+    if (token_id / 32 >= mask_size) return false;
+    return type_mask.isTokenAllowed(mask[0..mask_size], token_id);
+}
+
+/// Export: Allow a token in mask
+export fn ananke_allow_token(
+    mask: [*]u32,
+    mask_size: usize,
+    token_id: usize,
+) callconv(.C) void {
+    if (token_id / 32 >= mask_size) return;
+    type_mask.allowToken(mask[0..mask_size], token_id);
+}
+
+/// Export: Disallow a token in mask
+export fn ananke_disallow_token(
+    mask: [*]u32,
+    mask_size: usize,
+    token_id: usize,
+) callconv(.C) void {
+    if (token_id / 32 >= mask_size) return;
+    type_mask.disallowToken(mask[0..mask_size], token_id);
+}
+
+/// Export: Check type assignability
+export fn ananke_is_type_assignable(
+    source_type: u8,
+    target_type: u8,
+) callconv(.C) bool {
+    return type_mask.isAssignable(
+        @as(type_mask.TypeSpec, @enumFromInt(source_type)),
+        @as(type_mask.TypeSpec, @enumFromInt(target_type)),
+    );
+}
+
+/// Export: Compute type meet
+export fn ananke_type_meet(
+    t1: u8,
+    t2: u8,
+) callconv(.C) u8 {
+    return @intFromEnum(type_mask.typeMeet(
+        @as(type_mask.TypeSpec, @enumFromInt(t1)),
+        @as(type_mask.TypeSpec, @enumFromInt(t2)),
+    ));
+}
+
+/// Export: Compute type join
+export fn ananke_type_join(
+    t1: u8,
+    t2: u8,
+) callconv(.C) u8 {
+    return @intFromEnum(type_mask.typeJoin(
+        @as(type_mask.TypeSpec, @enumFromInt(t1)),
+        @as(type_mask.TypeSpec, @enumFromInt(t2)),
+    ));
+}
+
+// =============================================================================
+// Parallel Fusion FFI
+// =============================================================================
+
+/// Export: Fuse pre-computed masks with optional selectivity ordering
+export fn ananke_fuse_premade_masks(
+    masks: [*]const [*]const u32,
+    mask_count: usize,
+    mask_size: usize,
+    result: [*]u32,
+    selectivity_ordered: bool,
+) callconv(.C) u64 {
+    if (mask_count == 0) {
+        @memset(result[0..mask_size], 0xFFFFFFFF);
+        return @as(u64, mask_size) * 32;
+    }
+
+    // Convert to slice of slices
+    var mask_slices: [parallel_fusion.MAX_DOMAINS][]const u32 = undefined;
+    const count = @min(mask_count, parallel_fusion.MAX_DOMAINS);
+    for (0..count) |i| {
+        mask_slices[i] = masks[i][0..mask_size];
+    }
+
+    return parallel_fusion.fusePremadeMasks(
+        mask_slices[0..count],
+        mask_size,
+        result[0..mask_size],
+        selectivity_ordered,
+    );
 }
