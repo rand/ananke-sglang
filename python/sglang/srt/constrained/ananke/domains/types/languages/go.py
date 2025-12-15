@@ -660,14 +660,179 @@ class GoTypeSystem(LanguageTypeSystem):
         return False
 
     def _check_interface_assignable(self, source: Type, target: GoInterfaceType) -> bool:
-        """Check if source implements target interface."""
-        # Empty interface accepts anything
+        """Check if source implements target interface.
+
+        Go interface satisfaction is structural - a type implements an interface
+        if it has all the methods declared by the interface.
+
+        Args:
+            source: The source type to check
+            target: The target interface type
+
+        Returns:
+            True if source satisfies the target interface
+        """
+        # Empty interface (interface{} or any) accepts anything
         if not target.methods and not target.embedded:
             return True
 
-        # Check if source is a struct or named type with methods
-        # This is a simplified check - full implementation would
-        # examine method sets
+        # Get all required methods from target interface (including embedded)
+        required_methods = self._get_interface_methods(target)
+
+        # Interface to interface assignment
+        if isinstance(source, GoInterfaceType):
+            source_methods = self._get_interface_methods(source)
+            # Source interface must have all methods of target interface
+            for name, sig in required_methods.items():
+                if name not in source_methods:
+                    return False
+                # Check method signature compatibility
+                if not self._check_method_compatible(source_methods[name], sig):
+                    return False
+            return True
+
+        # Pointer types can satisfy interfaces
+        if isinstance(source, GoPointerType):
+            # Try the pointee type
+            return self._check_interface_assignable(source.pointee, target)
+
+        # Named types can have methods
+        if isinstance(source, GoNamedType):
+            # Named types may have methods defined elsewhere
+            # Without full method tracking, we check if this is a known type
+            # that satisfies common interfaces
+            return self._check_named_type_interface(source, target, required_methods)
+
+        # Struct types can have methods
+        if isinstance(source, GoStructType):
+            # Structs with embedded types may satisfy interfaces through embedding
+            return self._check_struct_interface(source, target, required_methods)
+
+        # Other types generally don't satisfy non-empty interfaces
+        return False
+
+    def _get_interface_methods(self, iface: GoInterfaceType) -> Dict[str, GoFunctionType]:
+        """Get all methods from an interface, including embedded interfaces.
+
+        Args:
+            iface: The interface to get methods from
+
+        Returns:
+            Dict mapping method names to their function types
+        """
+        methods: Dict[str, GoFunctionType] = {}
+
+        # Add direct methods
+        for name, sig in iface.methods:
+            methods[name] = sig
+
+        # Add methods from embedded interfaces
+        for embedded in iface.embedded:
+            if isinstance(embedded, GoInterfaceType):
+                embedded_methods = self._get_interface_methods(embedded)
+                methods.update(embedded_methods)
+
+        return methods
+
+    def _check_method_compatible(self, source_sig: GoFunctionType, target_sig: GoFunctionType) -> bool:
+        """Check if source method signature is compatible with target.
+
+        For Go, method signatures must match exactly (no covariance/contravariance).
+
+        Args:
+            source_sig: The source method signature
+            target_sig: The target method signature
+
+        Returns:
+            True if signatures are compatible
+        """
+        # Check parameter count
+        if len(source_sig.params) != len(target_sig.params):
+            return False
+
+        # Check return type count
+        if len(source_sig.returns) != len(target_sig.returns):
+            return False
+
+        # Check parameter types
+        for src_param, tgt_param in zip(source_sig.params, target_sig.params):
+            if src_param != tgt_param:
+                return False
+
+        # Check return types
+        for src_ret, tgt_ret in zip(source_sig.returns, target_sig.returns):
+            if src_ret != tgt_ret:
+                return False
+
+        return True
+
+    def _check_named_type_interface(
+        self,
+        source: GoNamedType,
+        target: GoInterfaceType,
+        required_methods: Dict[str, GoFunctionType],
+    ) -> bool:
+        """Check if a named type satisfies an interface.
+
+        This is a heuristic check since we don't have full method tracking.
+
+        Args:
+            source: The named type
+            target: The target interface
+            required_methods: Methods required by the interface
+
+        Returns:
+            True if the named type likely satisfies the interface
+        """
+        # Check common interface patterns
+        source_name = source.name.lower() if source.name else ""
+
+        # error interface - any type named "error" or ending in "Error"
+        if target.name == "error" or (len(required_methods) == 1 and "Error" in required_methods):
+            if source_name == "error" or source_name.endswith("error"):
+                return True
+
+        # Stringer interface
+        if len(required_methods) == 1 and "String" in required_methods:
+            # Many types implement Stringer
+            pass
+
+        # fmt.Formatter, io.Reader, io.Writer, etc. would need method tracking
+        # For now, be conservative and return False for unknown types
+        return False
+
+    def _check_struct_interface(
+        self,
+        source: GoStructType,
+        target: GoInterfaceType,
+        required_methods: Dict[str, GoFunctionType],
+    ) -> bool:
+        """Check if a struct type satisfies an interface.
+
+        Structs can satisfy interfaces through:
+        1. Direct methods (not tracked here)
+        2. Embedded types that satisfy the interface
+
+        Args:
+            source: The struct type
+            target: The target interface
+            required_methods: Methods required by the interface
+
+        Returns:
+            True if the struct satisfies the interface
+        """
+        # Check embedded types
+        for field in source.fields:
+            _, field_type, _ = field
+            if isinstance(field_type, GoInterfaceType):
+                # Embedded interface directly satisfies target if it's a superset
+                if self._check_interface_assignable(field_type, target):
+                    return True
+            elif isinstance(field_type, GoNamedType):
+                # Embedded named type might satisfy interface
+                if self._check_interface_assignable(field_type, target):
+                    return True
+
         return False
 
     def format_type(self, typ: Type) -> str:
