@@ -41,11 +41,12 @@ try:
         RustTraitBound,
         RustDynTraitType,
         RustImplTraitType,
-        RustStructType,
+        RustStringType,
         RUST_I32,
-        RUST_STRING,
+        RUST_STR,
         RUST_BOOL,
     )
+    RUST_STRING = RustStringType()
     from ...domains.types.languages.kotlin import (
         KotlinTypeSystem,
         KotlinGenericType,
@@ -93,11 +94,12 @@ except ImportError:
         RustTraitBound,
         RustDynTraitType,
         RustImplTraitType,
-        RustStructType,
+        RustStringType,
         RUST_I32,
-        RUST_STRING,
+        RUST_STR,
         RUST_BOOL,
     )
+    RUST_STRING = RustStringType()
     from domains.types.languages.kotlin import (
         KotlinTypeSystem,
         KotlinGenericType,
@@ -154,7 +156,7 @@ class TestGoInterfaceSatisfaction:
         # Interface with String() method
         stringer = GoInterfaceType(
             name="Stringer",
-            methods=(("String", GoFunctionType(params=(), returns=(GO_STRING,))),)
+            methods=(("String", GoFunctionType(parameters=(), returns=(GO_STRING,))),)
         )
         # Named type with String method would satisfy
         # Without method implementation tracking, this is heuristic
@@ -171,7 +173,7 @@ class TestGoInterfaceSatisfaction:
         iface = GoInterfaceType(
             name="Reader",
             methods=(
-                ("Read", GoFunctionType(params=(GO_INT,), returns=(GO_INT,))),
+                ("Read", GoFunctionType(parameters=(("p", GO_INT),), returns=(GO_INT,))),
             )
         )
         methods = ts._get_interface_methods(iface)

@@ -604,6 +604,11 @@ class KotlinTypeSystem(LanguageTypeSystem):
         if isinstance(source, KotlinClassType) and isinstance(target, KotlinClassType):
             return self._check_class_assignable(source, target)
 
+        # Primitive to class type (e.g., Int to Number)
+        if isinstance(source, PrimitiveType) and isinstance(target, KotlinClassType):
+            # Check using known class hierarchy
+            return self._is_known_subclass(source.name, target.name)
+
         return False
 
     def _check_numeric_assignable(self, source: PrimitiveType, target: PrimitiveType) -> bool:

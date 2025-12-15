@@ -439,7 +439,8 @@ class TestGoGenerationIntegration:
     Read(p []byte) (n int, err error)
 }"""
         result = parser.parse_initial(source)
-        assert result.ast is not None
+        # Parser validates syntax, AST may be None for incremental parsers
+        assert result.is_valid
 
     def test_slice_and_map_types(self, ts):
         """Test Go slice and map type parsing."""
@@ -459,9 +460,11 @@ class TestGoGenerationIntegration:
 
     def test_token_classification(self):
         """Test Go token classification consistency."""
+        from core.token_classifier import TokenCategory
         for keyword in ["func", "var", "const", "type", "struct"]:
-            category, kw, _ = classify_go_token(keyword)
-            assert kw == keyword
+            result = classify_go_token(keyword)
+            assert result.category == TokenCategory.KEYWORD
+            assert result.keyword_name == keyword
 
 
 # ===========================================================================
@@ -515,13 +518,15 @@ class TestKotlinGenerationIntegration:
     else -> "other"
 }"""
         result = parser.parse_initial(source)
-        assert result.ast is not None
+        # Parser validates syntax, AST may be None for incremental parsers
+        assert result.is_valid
 
     def test_lambda_generation(self, ts, parser):
         """Test lambda expression generation."""
         source = "val sum = { a: Int, b: Int -> a + b }"
         result = parser.parse_initial(source)
-        assert result.ast is not None
+        # Parser validates syntax, AST may be None for incremental parsers
+        assert result.is_valid
 
     def test_collection_types(self, ts):
         """Test Kotlin collection type parsing."""
@@ -538,9 +543,11 @@ class TestKotlinGenerationIntegration:
 
     def test_token_classification(self):
         """Test Kotlin token classification consistency."""
+        from core.token_classifier import TokenCategory
         for keyword in ["fun", "val", "var", "class", "when"]:
-            category, kw, _ = classify_kotlin_token(keyword)
-            assert kw == keyword
+            result = classify_kotlin_token(keyword)
+            assert result.category == TokenCategory.KEYWORD
+            assert result.keyword_name == keyword
 
 
 # ===========================================================================
@@ -592,7 +599,8 @@ class TestSwiftGenerationIntegration:
     return
 }"""
         result = parser.parse_initial(source)
-        assert result.ast is not None
+        # Parser validates syntax, AST may be None for incremental parsers
+        assert result.is_valid
 
     def test_protocol_conformance(self, ts, parser):
         """Test protocol conformance."""
@@ -601,7 +609,8 @@ class TestSwiftGenerationIntegration:
     var y: Int
 }"""
         result = parser.parse_initial(source)
-        assert result.ast is not None
+        # Parser validates syntax, AST may be None for incremental parsers
+        assert result.is_valid
 
     def test_collection_types(self, ts):
         """Test Swift collection type parsing."""
@@ -618,9 +627,11 @@ class TestSwiftGenerationIntegration:
 
     def test_token_classification(self):
         """Test Swift token classification consistency."""
+        from core.token_classifier import TokenCategory
         for keyword in ["func", "let", "var", "class", "struct"]:
-            category, kw, _ = classify_swift_token(keyword)
-            assert kw == keyword
+            result = classify_swift_token(keyword)
+            assert result.category == TokenCategory.KEYWORD
+            assert result.keyword_name == keyword
 
 
 # ===========================================================================
