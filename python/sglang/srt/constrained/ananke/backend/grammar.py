@@ -51,6 +51,11 @@ try:
         UNIFIED_TOP,
         UnifiedConstraint,
     )
+    from ..masks.lazy import (
+        EvaluationBudget,
+        EvaluationPriority,
+        LazyConstraintEvaluator,
+    )
 except ImportError:
     from core.checkpoint import (
         Checkpoint,
@@ -62,6 +67,11 @@ except ImportError:
     from core.unified import (
         UNIFIED_TOP,
         UnifiedConstraint,
+    )
+    from masks.lazy import (
+        EvaluationBudget,
+        EvaluationPriority,
+        LazyConstraintEvaluator,
     )
 
 if TYPE_CHECKING:
@@ -138,6 +148,14 @@ class AnankeGrammar(BaseGrammarObject):
 
         # Cache for computed domain masks
         self._domain_mask_cache: Dict[str, torch.Tensor] = {}
+
+        # Lazy evaluator for budget-limited domain evaluation
+        self._lazy_evaluator = self._init_lazy_evaluator()
+        self._evaluation_budget = EvaluationBudget(
+            max_time_ns=2_000_000,  # 2ms budget
+            max_domains=5,
+            min_selectivity=0.95,  # Stop if 95% of vocab blocked
+        )
 
     def accept_token(self, token: int) -> None:
         """Accept a generated token, updating all domain constraints.
@@ -273,7 +291,12 @@ class AnankeGrammar(BaseGrammarObject):
             return self.syntax_grammar.is_terminated()
         return self.finished
 
-    def fill_vocab_mask(self, vocab_mask: torch.Tensor, idx: int) -> None:
+    def fill_vocab_mask(
+        self,
+        vocab_mask: torch.Tensor,
+        idx: int,
+        use_lazy_evaluation: bool = True,
+    ) -> None:
         """Fill vocabulary mask with valid tokens for this request.
 
         This method:
@@ -281,9 +304,14 @@ class AnankeGrammar(BaseGrammarObject):
         2. Computes additional domain masks (types, imports, etc.)
         3. Applies additional masks via bitwise AND
 
+        When use_lazy_evaluation is True, domains are evaluated in priority
+        order with budget control. Expensive domains may be skipped if the
+        mask is already sufficiently constrained.
+
         Args:
             vocab_mask: Bitmask tensor to fill [batch_size, mask_size]
             idx: Index into the batch for this request
+            use_lazy_evaluation: If True, use budget-limited lazy evaluation
         """
         # First, delegate to syntax grammar
         if self.syntax_grammar is not None:
@@ -292,7 +320,18 @@ class AnankeGrammar(BaseGrammarObject):
                 self.finished = True
                 return
 
-        # Compute and apply additional domain masks
+        if use_lazy_evaluation:
+            self._fill_vocab_mask_lazy(vocab_mask, idx)
+        else:
+            self._fill_vocab_mask_eager(vocab_mask, idx)
+
+    def _fill_vocab_mask_eager(self, vocab_mask: torch.Tensor, idx: int) -> None:
+        """Eagerly evaluate all domain masks (original behavior).
+
+        Args:
+            vocab_mask: Bitmask tensor to fill [batch_size, mask_size]
+            idx: Index into the batch for this request
+        """
         for domain_name, domain in self.domains.items():
             if domain_name == "syntax":
                 continue  # Already handled by syntax_grammar
@@ -306,6 +345,41 @@ class AnankeGrammar(BaseGrammarObject):
 
             # Apply via bitwise AND with existing mask
             self._apply_domain_mask(vocab_mask, idx, domain_mask)
+
+    def _fill_vocab_mask_lazy(self, vocab_mask: torch.Tensor, idx: int) -> None:
+        """Lazily evaluate domain masks with budget control.
+
+        Domains are evaluated in priority order. If the budget is exceeded
+        or the mask is already sufficiently constrained, lower-priority
+        domains are skipped.
+
+        Args:
+            vocab_mask: Bitmask tensor to fill [batch_size, mask_size]
+            idx: Index into the batch for this request
+        """
+        # Build constraints dict for lazy evaluator
+        constraints = {}
+        for domain_name in self.domains:
+            if domain_name == "syntax":
+                continue  # Already handled by syntax_grammar
+
+            domain_constraint = getattr(self.constraint, domain_name)
+            if not domain_constraint.is_top():
+                constraints[domain_name] = domain_constraint
+
+        if not constraints:
+            return  # Nothing to evaluate
+
+        # Use lazy evaluator with budget
+        result = self._lazy_evaluator.evaluate(
+            constraints=constraints,
+            context=self.context,
+            budget=self._evaluation_budget,
+        )
+
+        # Apply the fused mask
+        if result.fused_mask is not None:
+            self._apply_domain_mask(vocab_mask, idx, result.fused_mask)
 
     def allocate_vocab_mask(
         self, vocab_size: int, batch_size: int, device
@@ -544,3 +618,43 @@ class AnankeGrammar(BaseGrammarObject):
             # Invalidate only if changed
             if old_hash != new_hash:
                 self._domain_mask_cache.pop(domain_name, None)
+
+    def _init_lazy_evaluator(self) -> LazyConstraintEvaluator:
+        """Initialize lazy evaluator with domain priorities.
+
+        Domains are registered with priorities based on their typical
+        selectivity and computation cost:
+        - syntax: CRITICAL (always evaluate, fundamental constraint)
+        - types: HIGH (usually highly selective, moderate cost)
+        - imports: NORMAL (moderately selective)
+        - controlflow: NORMAL (depends on code structure)
+        - semantics: LOW (expensive, often redundant with others)
+
+        Returns:
+            Configured LazyConstraintEvaluator
+        """
+        evaluator = LazyConstraintEvaluator()
+
+        # Domain priorities and estimated times (nanoseconds)
+        domain_config = {
+            "syntax": (EvaluationPriority.CRITICAL, 50_000),      # 50μs
+            "types": (EvaluationPriority.HIGH, 500_000),          # 500μs
+            "imports": (EvaluationPriority.NORMAL, 200_000),      # 200μs
+            "controlflow": (EvaluationPriority.NORMAL, 100_000),  # 100μs
+            "semantics": (EvaluationPriority.LOW, 1_000_000),     # 1ms
+        }
+
+        for domain_name, domain in self.domains.items():
+            if domain_name in domain_config:
+                priority, est_time = domain_config[domain_name]
+            else:
+                priority, est_time = EvaluationPriority.NORMAL, 500_000
+
+            evaluator.register(
+                domain=domain_name,
+                compute_fn=domain.token_mask,
+                priority=priority,
+                estimated_time_ns=est_time,
+            )
+
+        return evaluator
