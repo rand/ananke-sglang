@@ -96,13 +96,19 @@ AnankeGrammar(
 
 ## Supported Languages
 
-- Python (full support)
-- TypeScript/JavaScript (full support)
-- Go (types, imports)
-- Rust (types, imports)
-- Kotlin (types, imports)
-- Swift (types, imports)
-- Zig (types, imports)
+All 7 languages have **full support** including parsing, types, imports, and control flow:
+
+| Language | Parsing | Types | Imports | ControlFlow |
+|----------|---------|-------|---------|-------------|
+| Python | Complete | Complete | Complete | Complete |
+| TypeScript | Complete | Complete | Complete | Complete |
+| Go | Complete | Complete | Complete | Complete |
+| Rust | Complete | Complete | Complete | Complete |
+| Kotlin | Complete | Complete | Complete | Complete |
+| Swift | Complete | Complete | Complete | Complete |
+| Zig | Complete | Complete | Complete | Complete |
+
+See [docs/LANGUAGE_IMPLEMENTATION_STATUS.md](docs/LANGUAGE_IMPLEMENTATION_STATUS.md) for detailed implementation information.
 
 ## Performance Tuning
 
