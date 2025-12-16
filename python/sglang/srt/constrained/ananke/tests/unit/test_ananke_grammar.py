@@ -264,8 +264,8 @@ class TestLazyEvaluation:
 
     def test_evaluator_initialized(self, grammar):
         """Test that an evaluator is initialized based on strategy."""
-        # Default strategy is TIERED, so tiered evaluator should be initialized
-        assert grammar._tiered_evaluator is not None
+        # Default strategy is ADAPTIVE, so adaptive evaluator should be initialized
+        assert grammar._adaptive_evaluator is not None
         assert grammar._evaluation_budget is not None
 
     def test_evaluation_budget_defaults(self, grammar):

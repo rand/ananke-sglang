@@ -955,3 +955,548 @@ def create_parallel_evaluator(
         New ParallelDomainEvaluator instance
     """
     return ParallelDomainEvaluator(max_workers=max_workers)
+
+
+# =============================================================================
+# Adaptive Tiered Evaluator (Phase 1.1)
+# =============================================================================
+
+
+@dataclass
+class DomainStats:
+    """Runtime statistics for a domain.
+
+    Tracks latency, selectivity, and usefulness metrics for adaptive evaluation.
+
+    Attributes:
+        latency_ns: Exponential moving average of latency in nanoseconds
+        selectivity_avg: Average selectivity (fraction of vocab blocked)
+        usefulness_rate: Fraction of evaluations that constrained the mask
+        skip_rate: Fraction of evaluations where domain was skipped
+        evaluation_count: Total number of evaluations
+        skip_count: Total number of times domain was skipped
+    """
+
+    latency_ns: float = 500_000.0  # 500μs default
+    selectivity_avg: float = 0.5
+    usefulness_rate: float = 0.5
+    skip_rate: float = 0.0
+    evaluation_count: int = 0
+    skip_count: int = 0
+
+    # Running window for recent history
+    _latency_history: List[int] = field(default_factory=list)
+    _selectivity_history: List[float] = field(default_factory=list)
+    _usefulness_history: List[bool] = field(default_factory=list)
+    _max_history: int = 50
+
+    def record_evaluation(
+        self,
+        latency_ns: int,
+        selectivity: float,
+        was_useful: bool,
+    ) -> None:
+        """Record a domain evaluation.
+
+        Args:
+            latency_ns: Time taken for evaluation
+            selectivity: Fraction of vocab blocked by this domain
+            was_useful: Whether domain actually constrained anything
+        """
+        self.evaluation_count += 1
+
+        # Update histories
+        self._latency_history.append(latency_ns)
+        self._selectivity_history.append(selectivity)
+        self._usefulness_history.append(was_useful)
+
+        # Trim to max history
+        if len(self._latency_history) > self._max_history:
+            self._latency_history = self._latency_history[-self._max_history:]
+            self._selectivity_history = self._selectivity_history[-self._max_history:]
+            self._usefulness_history = self._usefulness_history[-self._max_history:]
+
+        # Update exponential moving averages (alpha=0.3 for responsiveness)
+        alpha = 0.3
+        self.latency_ns = alpha * latency_ns + (1 - alpha) * self.latency_ns
+        self.selectivity_avg = alpha * selectivity + (1 - alpha) * self.selectivity_avg
+
+        # Update usefulness rate
+        if self._usefulness_history:
+            self.usefulness_rate = sum(self._usefulness_history) / len(self._usefulness_history)
+
+    def record_skip(self) -> None:
+        """Record that this domain was skipped."""
+        self.skip_count += 1
+        total = self.evaluation_count + self.skip_count
+        if total > 0:
+            self.skip_rate = self.skip_count / total
+
+    @property
+    def efficiency_score(self) -> float:
+        """Compute efficiency score: selectivity / latency.
+
+        Higher score = more efficient (high selectivity, low latency).
+        Used for dynamic reordering.
+
+        Returns:
+            Efficiency score (selectivity per microsecond)
+        """
+        if self.latency_ns <= 0:
+            return float('inf')
+        return self.selectivity_avg / (self.latency_ns / 1000.0)  # per μs
+
+    @property
+    def should_skip(self) -> bool:
+        """Determine if domain should be skipped based on history.
+
+        Skip if:
+        - Usefulness rate < 10% (rarely constrains anything)
+        - AND we have enough history to be confident
+
+        Returns:
+            True if domain should be skipped
+        """
+        if self.evaluation_count < 10:
+            return False  # Not enough data
+        return self.usefulness_rate < 0.1
+
+
+@dataclass
+class AdaptiveTieredResult:
+    """Result of adaptive tiered evaluation.
+
+    Extends TieredEvaluationResult with adaptive-specific statistics.
+
+    Attributes:
+        fused_mask: The final fused mask
+        evaluated_domains: Domains that were evaluated (in order)
+        skipped_domains: Domains that were skipped
+        tiers_processed: Number of tiers that were processed
+        early_termination: Whether evaluation stopped early
+        final_popcount: Number of allowed tokens in final mask
+        total_time_ns: Total evaluation time
+        domain_latencies: Per-domain latencies for this evaluation
+        domain_selectivities: Per-domain selectivities for this evaluation
+        reordered: Whether domains were reordered from default
+    """
+
+    fused_mask: torch.Tensor
+    evaluated_domains: List[str] = field(default_factory=list)
+    skipped_domains: List[str] = field(default_factory=list)
+    tiers_processed: int = 0
+    early_termination: bool = False
+    final_popcount: int = 0
+    total_time_ns: int = 0
+    domain_latencies: Dict[str, int] = field(default_factory=dict)
+    domain_selectivities: Dict[str, float] = field(default_factory=dict)
+    reordered: bool = False
+
+
+class AdaptiveTieredEvaluator:
+    """Tiered constraint evaluator with adaptive reordering and skip prediction.
+
+    Extends TieredConstraintEvaluator with:
+    1. Runtime latency tracking per domain
+    2. Selectivity/latency ratio for dynamic reordering within tiers
+    3. Adaptive early termination based on popcount history
+    4. Domain skip prediction (skip domains that rarely constrain)
+
+    The evaluator maintains rolling statistics for each domain and uses them
+    to optimize evaluation order and skip decisions.
+
+    Key optimizations:
+    - Domains within a tier are reordered by efficiency (selectivity/latency)
+    - Domains with <10% usefulness rate are auto-skipped
+    - Early termination threshold adapts based on historical popcount distribution
+
+    Example:
+        >>> evaluator = AdaptiveTieredEvaluator(target_popcount=100)
+        >>> evaluator.register("syntax", syntax_fn, EvaluationTier.FAST)
+        >>> evaluator.register("types", types_fn, EvaluationTier.SLOW)
+        >>> # After many evaluations, types may be reordered or skipped
+        >>> result = evaluator.evaluate(constraints, context)
+    """
+
+    def __init__(
+        self,
+        target_popcount: int = 100,
+        max_time_ns: int = 10_000_000,  # 10ms default
+        enable_reordering: bool = True,
+        enable_skip_prediction: bool = True,
+        enable_adaptive_threshold: bool = True,
+    ) -> None:
+        """Initialize the adaptive tiered evaluator.
+
+        Args:
+            target_popcount: Stop early if popcount drops below this
+            max_time_ns: Maximum total evaluation time
+            enable_reordering: Enable dynamic reordering within tiers
+            enable_skip_prediction: Enable domain skip prediction
+            enable_adaptive_threshold: Enable adaptive early termination threshold
+        """
+        self._target_popcount = target_popcount
+        self._base_target_popcount = target_popcount  # For adaptive adjustment
+        self._max_time_ns = max_time_ns
+        self._enable_reordering = enable_reordering
+        self._enable_skip_prediction = enable_skip_prediction
+        self._enable_adaptive_threshold = enable_adaptive_threshold
+
+        self._domains: Dict[str, Callable[[Any, Any], torch.Tensor]] = {}
+        self._tiers: Dict[str, EvaluationTier] = {}
+        self._stats: Dict[str, DomainStats] = {}
+
+        # Popcount history for adaptive threshold
+        self._popcount_history: List[int] = []
+        self._max_popcount_history = 100
+
+        # Evaluation statistics
+        self._total_evaluations = 0
+        self._total_early_terminations = 0
+        self._total_skips = 0
+
+    def register(
+        self,
+        domain: str,
+        compute_fn: Callable[[Any, Any], torch.Tensor],
+        tier: Optional[EvaluationTier] = None,
+        initial_latency_ns: Optional[int] = None,
+    ) -> None:
+        """Register a domain for adaptive tiered evaluation.
+
+        Args:
+            domain: Domain name
+            compute_fn: Function to compute mask (constraint, context) -> mask
+            tier: Evaluation tier (defaults from DEFAULT_DOMAIN_TIERS or SLOW)
+            initial_latency_ns: Initial latency estimate (uses tier default if None)
+        """
+        self._domains[domain] = compute_fn
+        self._tiers[domain] = tier or DEFAULT_DOMAIN_TIERS.get(domain, EvaluationTier.SLOW)
+
+        # Initialize stats with tier-appropriate defaults
+        tier_latencies = {
+            EvaluationTier.FAST: 50_000,      # 50μs
+            EvaluationTier.MEDIUM: 200_000,   # 200μs
+            EvaluationTier.SLOW: 500_000,     # 500μs
+            EvaluationTier.OPTIONAL: 1_000_000,  # 1ms
+        }
+        default_latency = tier_latencies.get(self._tiers[domain], 500_000)
+        latency = initial_latency_ns or default_latency
+
+        self._stats[domain] = DomainStats(latency_ns=float(latency))
+
+    def unregister(self, domain: str) -> None:
+        """Unregister a domain.
+
+        Args:
+            domain: Domain name to remove
+        """
+        self._domains.pop(domain, None)
+        self._tiers.pop(domain, None)
+        self._stats.pop(domain, None)
+
+    def set_tier(self, domain: str, tier: EvaluationTier) -> None:
+        """Set the tier for a domain.
+
+        Args:
+            domain: Domain name
+            tier: New tier
+        """
+        if domain in self._domains:
+            self._tiers[domain] = tier
+
+    def set_target_popcount(self, target: int) -> None:
+        """Set the target popcount for early termination.
+
+        Args:
+            target: New target popcount
+        """
+        self._target_popcount = target
+        self._base_target_popcount = target
+
+    def evaluate(
+        self,
+        constraints: Dict[str, Any],
+        context: Any,
+    ) -> AdaptiveTieredResult:
+        """Evaluate constraints with adaptive tiering and reordering.
+
+        Args:
+            constraints: Map from domain to constraint
+            context: Generation context
+
+        Returns:
+            AdaptiveTieredResult with fused mask and adaptive statistics
+        """
+        start_ns = time.perf_counter_ns()
+        self._total_evaluations += 1
+
+        vocab_size = getattr(context, "vocab_size", 32000)
+        device = getattr(context, "device", "cpu")
+
+        # Use pool if available
+        mask_pool = getattr(context, "mask_pool", None)
+        if mask_pool is not None:
+            fused_mask, handle = mask_pool.acquire(fill_value=True)
+        else:
+            fused_mask = torch.ones(vocab_size, dtype=torch.bool, device=device)
+            handle = -1
+
+        evaluated: List[str] = []
+        skipped: List[str] = []
+        domain_latencies: Dict[str, int] = {}
+        domain_selectivities: Dict[str, float] = {}
+        tiers_processed = 0
+        early_termination = False
+        reordered = False
+
+        # Compute adaptive threshold
+        effective_target = self._compute_adaptive_threshold()
+
+        # Group domains by tier
+        domains_by_tier: Dict[EvaluationTier, List[str]] = {
+            tier: [] for tier in EvaluationTier
+        }
+        for domain in constraints:
+            if domain in self._domains:
+                tier = self._tiers.get(domain, EvaluationTier.SLOW)
+                domains_by_tier[tier].append(domain)
+
+        # Process tiers in order
+        running_mask_selectivity = 0.0  # Track how constrained we are
+
+        for tier in EvaluationTier:
+            tier_domains = domains_by_tier[tier]
+            if not tier_domains:
+                continue
+
+            tiers_processed += 1
+
+            # Optionally reorder domains within tier by efficiency
+            if self._enable_reordering and len(tier_domains) > 1:
+                original_order = tier_domains.copy()
+                tier_domains = self._reorder_by_efficiency(tier_domains)
+                if tier_domains != original_order:
+                    reordered = True
+
+            for domain in tier_domains:
+                # Check skip prediction
+                if self._enable_skip_prediction:
+                    stats = self._stats.get(domain)
+                    if stats and stats.should_skip:
+                        skipped.append(domain)
+                        stats.record_skip()
+                        self._total_skips += 1
+                        continue
+
+                # Check time budget
+                elapsed_ns = time.perf_counter_ns() - start_ns
+                if elapsed_ns >= self._max_time_ns:
+                    remaining = tier_domains[tier_domains.index(domain):]
+                    skipped.extend([d for d in remaining if d not in skipped])
+                    early_termination = True
+                    break
+
+                # Compute mask with timing
+                constraint = constraints[domain]
+                domain_start = time.perf_counter_ns()
+                mask = self._domains[domain](constraint, context)
+                domain_end = time.perf_counter_ns()
+                domain_latency = domain_end - domain_start
+
+                evaluated.append(domain)
+                domain_latencies[domain] = domain_latency
+
+                # Compute domain's individual selectivity
+                domain_popcount = int(mask.sum().item())
+                domain_selectivity = (vocab_size - domain_popcount) / vocab_size
+                domain_selectivities[domain] = domain_selectivity
+
+                # Fuse
+                fused_mask &= mask
+
+                # Check for early termination (all blocked)
+                popcount = int(fused_mask.sum().item())
+                if popcount == 0:
+                    remaining = [
+                        d for t in EvaluationTier
+                        if t.value > tier.value
+                        for d in domains_by_tier[t]
+                    ]
+                    skipped.extend(remaining)
+                    early_termination = True
+                    self._total_early_terminations += 1
+                    break
+
+                # Update stats for this domain
+                was_useful = domain_selectivity > 0.01
+                if domain in self._stats:
+                    self._stats[domain].record_evaluation(
+                        domain_latency, domain_selectivity, was_useful
+                    )
+
+            if early_termination:
+                break
+
+            # Check popcount threshold after tier
+            popcount = int(fused_mask.sum().item())
+            running_mask_selectivity = (vocab_size - popcount) / vocab_size
+
+            if popcount <= effective_target:
+                # Sufficiently constrained - skip remaining tiers
+                remaining = [
+                    d for t in EvaluationTier
+                    if t.value > tier.value
+                    for d in domains_by_tier[t]
+                ]
+                skipped.extend(remaining)
+                early_termination = True
+                self._total_early_terminations += 1
+                break
+
+        end_ns = time.perf_counter_ns()
+        final_popcount = int(fused_mask.sum().item())
+
+        # Update popcount history for adaptive threshold
+        self._popcount_history.append(final_popcount)
+        if len(self._popcount_history) > self._max_popcount_history:
+            self._popcount_history = self._popcount_history[-self._max_popcount_history:]
+
+        return AdaptiveTieredResult(
+            fused_mask=fused_mask,
+            evaluated_domains=evaluated,
+            skipped_domains=skipped,
+            tiers_processed=tiers_processed,
+            early_termination=early_termination,
+            final_popcount=final_popcount,
+            total_time_ns=end_ns - start_ns,
+            domain_latencies=domain_latencies,
+            domain_selectivities=domain_selectivities,
+            reordered=reordered,
+        )
+
+    def _reorder_by_efficiency(self, domains: List[str]) -> List[str]:
+        """Reorder domains by efficiency score (selectivity/latency).
+
+        Higher efficiency domains are evaluated first, as they provide
+        more constraint per unit time.
+
+        Args:
+            domains: List of domain names to reorder
+
+        Returns:
+            Reordered list with most efficient domains first
+        """
+        def efficiency(domain: str) -> float:
+            stats = self._stats.get(domain)
+            if stats is None:
+                return 0.0
+            return stats.efficiency_score
+
+        return sorted(domains, key=efficiency, reverse=True)
+
+    def _compute_adaptive_threshold(self) -> int:
+        """Compute adaptive early termination threshold.
+
+        Uses historical popcount distribution to set threshold at a level
+        that balances early termination frequency with constraint quality.
+
+        If most evaluations end with popcount < target, we can lower the
+        threshold. If they end with popcount >> target, we should raise it.
+
+        Returns:
+            Adaptive target popcount
+        """
+        if not self._enable_adaptive_threshold:
+            return self._target_popcount
+
+        if len(self._popcount_history) < 10:
+            return self._target_popcount
+
+        # Use 25th percentile of historical popcounts
+        sorted_history = sorted(self._popcount_history)
+        p25_idx = len(sorted_history) // 4
+        p25_popcount = sorted_history[p25_idx]
+
+        # Blend with base target (don't drift too far)
+        adaptive = int(0.7 * p25_popcount + 0.3 * self._base_target_popcount)
+
+        # Clamp to reasonable range
+        return max(10, min(adaptive, self._base_target_popcount * 2))
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get evaluator statistics.
+
+        Returns:
+            Dictionary with evaluation statistics
+        """
+        domain_stats = {}
+        for domain, stats in self._stats.items():
+            domain_stats[domain] = {
+                "latency_us": stats.latency_ns / 1000.0,
+                "selectivity": stats.selectivity_avg,
+                "usefulness_rate": stats.usefulness_rate,
+                "skip_rate": stats.skip_rate,
+                "efficiency_score": stats.efficiency_score,
+                "evaluation_count": stats.evaluation_count,
+                "should_skip": stats.should_skip,
+            }
+
+        return {
+            "total_evaluations": self._total_evaluations,
+            "total_early_terminations": self._total_early_terminations,
+            "early_termination_rate": (
+                self._total_early_terminations / self._total_evaluations
+                if self._total_evaluations > 0 else 0.0
+            ),
+            "total_skips": self._total_skips,
+            "current_adaptive_threshold": self._compute_adaptive_threshold(),
+            "base_threshold": self._base_target_popcount,
+            "domain_stats": domain_stats,
+        }
+
+    def reset_stats(self) -> None:
+        """Reset all statistics to initial state."""
+        for stats in self._stats.values():
+            stats.latency_ns = 500_000.0
+            stats.selectivity_avg = 0.5
+            stats.usefulness_rate = 0.5
+            stats.skip_rate = 0.0
+            stats.evaluation_count = 0
+            stats.skip_count = 0
+            stats._latency_history.clear()
+            stats._selectivity_history.clear()
+            stats._usefulness_history.clear()
+
+        self._popcount_history.clear()
+        self._total_evaluations = 0
+        self._total_early_terminations = 0
+        self._total_skips = 0
+
+
+def create_adaptive_tiered_evaluator(
+    target_popcount: int = 100,
+    max_time_ns: int = 10_000_000,
+    enable_reordering: bool = True,
+    enable_skip_prediction: bool = True,
+    enable_adaptive_threshold: bool = True,
+) -> AdaptiveTieredEvaluator:
+    """Factory function to create an AdaptiveTieredEvaluator.
+
+    Args:
+        target_popcount: Stop early if popcount drops below this
+        max_time_ns: Maximum total evaluation time
+        enable_reordering: Enable dynamic reordering within tiers
+        enable_skip_prediction: Enable domain skip prediction
+        enable_adaptive_threshold: Enable adaptive early termination threshold
+
+    Returns:
+        New AdaptiveTieredEvaluator instance
+    """
+    return AdaptiveTieredEvaluator(
+        target_popcount=target_popcount,
+        max_time_ns=max_time_ns,
+        enable_reordering=enable_reordering,
+        enable_skip_prediction=enable_skip_prediction,
+        enable_adaptive_threshold=enable_adaptive_threshold,
+    )

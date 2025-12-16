@@ -59,6 +59,7 @@ try:
         EvaluationTier,
         DEFAULT_DOMAIN_TIERS,
         ParallelDomainEvaluator,
+        AdaptiveTieredEvaluator,
     )
     from ..masks.speculative import (
         SpeculativeMaskCache,
@@ -83,6 +84,7 @@ except ImportError:
         EvaluationTier,
         DEFAULT_DOMAIN_TIERS,
         ParallelDomainEvaluator,
+        AdaptiveTieredEvaluator,
     )
     from masks.speculative import (
         SpeculativeMaskCache,
@@ -103,12 +105,14 @@ class EvaluationStrategy(Enum):
 
     LAZY: Budget-limited lazy evaluation with priority ordering
     TIERED: Tier-based evaluation with early termination on popcount
+    ADAPTIVE: Tiered evaluation with runtime adaptation (recommended)
     PARALLEL: Parallel domain evaluation with early termination
     EAGER: Evaluate all domains sequentially (original behavior)
     """
 
     LAZY = auto()
     TIERED = auto()
+    ADAPTIVE = auto()
     PARALLEL = auto()
     EAGER = auto()
 
@@ -148,7 +152,7 @@ class AnankeGrammar(BaseGrammarObject):
         mask_pool_size: int = 8,
         constraint_spec: Optional["ConstraintSpec"] = None,
         intensity: Optional["ConstraintIntensity"] = None,
-        evaluation_strategy: EvaluationStrategy = EvaluationStrategy.TIERED,
+        evaluation_strategy: EvaluationStrategy = EvaluationStrategy.ADAPTIVE,
         enable_speculative_cache: bool = True,
         speculative_lookahead: int = 3,
         tiered_target_popcount: int = 100,
@@ -234,6 +238,7 @@ class AnankeGrammar(BaseGrammarObject):
         # Initialize evaluators based on strategy
         self._lazy_evaluator: Optional[LazyConstraintEvaluator] = None
         self._tiered_evaluator: Optional[TieredConstraintEvaluator] = None
+        self._adaptive_evaluator: Optional[AdaptiveTieredEvaluator] = None
         self._parallel_evaluator: Optional[ParallelDomainEvaluator] = None
         self._speculative_cache: Optional[SpeculativeMaskCache] = None
 
@@ -248,6 +253,8 @@ class AnankeGrammar(BaseGrammarObject):
             self._lazy_evaluator = self._init_lazy_evaluator()
         elif evaluation_strategy == EvaluationStrategy.TIERED:
             self._tiered_evaluator = self._init_tiered_evaluator()
+        elif evaluation_strategy == EvaluationStrategy.ADAPTIVE:
+            self._adaptive_evaluator = self._init_adaptive_evaluator()
         elif evaluation_strategy == EvaluationStrategy.PARALLEL:
             self._parallel_evaluator = self._init_parallel_evaluator()
         # EAGER uses no evaluator - direct sequential evaluation
@@ -488,6 +495,12 @@ class AnankeGrammar(BaseGrammarObject):
             # Tier-based evaluation with early termination
             if self._tiered_evaluator is not None:
                 result = self._tiered_evaluator.evaluate(constraints, self.context)
+                fused_mask = result.fused_mask
+
+        elif self._evaluation_strategy == EvaluationStrategy.ADAPTIVE:
+            # Adaptive tiered evaluation with runtime optimization
+            if self._adaptive_evaluator is not None:
+                result = self._adaptive_evaluator.evaluate(constraints, self.context)
                 fused_mask = result.fused_mask
 
         elif self._evaluation_strategy == EvaluationStrategy.PARALLEL:
@@ -897,6 +910,54 @@ class AnankeGrammar(BaseGrammarObject):
 
         return evaluator
 
+    def _init_adaptive_evaluator(self) -> AdaptiveTieredEvaluator:
+        """Initialize adaptive tiered constraint evaluator.
+
+        Creates an adaptive evaluator that dynamically optimizes domain
+        evaluation based on runtime statistics:
+        1. Tracks latency and selectivity per domain
+        2. Reorders domains within tiers by efficiency (selectivity/latency)
+        3. Skips domains with low usefulness rate (<10%)
+        4. Adapts early termination threshold based on popcount history
+
+        This is the recommended evaluation strategy for best performance.
+
+        Returns:
+            Configured AdaptiveTieredEvaluator
+        """
+        evaluator = AdaptiveTieredEvaluator(
+            target_popcount=self._tiered_target_popcount,
+            max_time_ns=self._evaluation_budget.max_time_ns,
+            enable_reordering=True,
+            enable_skip_prediction=True,
+            enable_adaptive_threshold=True,
+        )
+
+        # Assign domains to tiers based on typical cost/selectivity
+        tier_assignments = {
+            "syntax": EvaluationTier.FAST,      # ~50μs, fundamental
+            "controlflow": EvaluationTier.FAST, # ~100μs, structural
+            "imports": EvaluationTier.MEDIUM,   # ~200μs, moderate
+            "types": EvaluationTier.SLOW,       # ~500μs, type checking
+            "semantics": EvaluationTier.OPTIONAL, # ~1ms, expensive
+        }
+
+        # Initial latency estimates (nanoseconds)
+        initial_latencies = {
+            "syntax": 50_000,       # 50μs
+            "controlflow": 100_000, # 100μs
+            "imports": 200_000,     # 200μs
+            "types": 500_000,       # 500μs
+            "semantics": 1_000_000, # 1ms
+        }
+
+        for domain_name, domain in self.domains.items():
+            tier = tier_assignments.get(domain_name, EvaluationTier.MEDIUM)
+            latency = initial_latencies.get(domain_name)
+            evaluator.register(domain_name, domain.token_mask, tier, latency)
+
+        return evaluator
+
     def _init_parallel_evaluator(self) -> ParallelDomainEvaluator:
         """Initialize parallel domain evaluator.
 
@@ -991,6 +1052,9 @@ class AnankeGrammar(BaseGrammarObject):
         elif self._evaluation_strategy == EvaluationStrategy.TIERED:
             if self._tiered_evaluator is not None and hasattr(self._tiered_evaluator, 'get_stats'):
                 stats["tiered_stats"] = self._tiered_evaluator.get_stats()
+        elif self._evaluation_strategy == EvaluationStrategy.ADAPTIVE:
+            if self._adaptive_evaluator is not None:
+                stats["adaptive_stats"] = self._adaptive_evaluator.get_stats()
         elif self._evaluation_strategy == EvaluationStrategy.PARALLEL:
             if self._parallel_evaluator is not None and hasattr(self._parallel_evaluator, 'get_stats'):
                 stats["parallel_stats"] = self._parallel_evaluator.get_stats()

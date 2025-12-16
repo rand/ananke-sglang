@@ -730,6 +730,9 @@ class TokenClassifier:
 # Global classifier cache
 _classifier_cache: Dict[int, TokenClassifier] = {}
 
+# Global native partition cache
+_native_partition_cache: Dict[int, Any] = {}
+
 
 def _compute_vocab_hash(tokenizer: Any) -> str:
     """Compute a deterministic hash of the vocabulary.
@@ -810,6 +813,300 @@ def get_or_create_classifier(
 def clear_classifier_cache() -> None:
     """Clear the global classifier cache."""
     _classifier_cache.clear()
+    _native_partition_cache.clear()
+
+
+def get_or_create_native_partition(
+    tokenizer: Any,
+    language: str = "python",
+) -> Optional[Any]:
+    """Get or create a native VocabPartition for a tokenizer.
+
+    This uses the Zig-based vocabulary classification which is 10-50x faster
+    than the pure Python implementation. Falls back to None if native library
+    is not available.
+
+    Args:
+        tokenizer: The model's tokenizer
+        language: Programming language
+
+    Returns:
+        VocabPartition instance or None if native library unavailable
+    """
+    # Check cache first
+    key = id(tokenizer)
+    if key in _native_partition_cache:
+        return _native_partition_cache[key]
+
+    # Try to import and create native partition
+    try:
+        from sglang.srt.constrained.ananke.zig.ffi import VocabPartition, is_native_available
+    except ImportError:
+        try:
+            from zig.ffi import VocabPartition, is_native_available
+        except ImportError:
+            return None
+
+    if not is_native_available():
+        return None
+
+    # Get vocabulary size
+    vocab_size = getattr(tokenizer, "vocab_size", None)
+    if vocab_size is None and hasattr(tokenizer, "get_vocab"):
+        vocab_size = len(tokenizer.get_vocab())
+    if vocab_size is None:
+        return None
+
+    # Create partition
+    partition = VocabPartition(vocab_size=vocab_size, language=language)
+
+    # Decode all tokens and classify
+    try:
+        token_strings = []
+        for token_id in range(vocab_size):
+            try:
+                text = tokenizer.decode([token_id])
+            except Exception:
+                text = ""
+            token_strings.append(text)
+
+        partition.classify_vocabulary(token_strings)
+
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to classify vocabulary: {e}")
+        return None
+
+    # Cache and return
+    _native_partition_cache[key] = partition
+    return partition
+
+
+class NativeTokenClassifier:
+    """Wrapper around VocabPartition that provides TokenClassifier-like interface.
+
+    This provides compatibility with code expecting a TokenClassifier while
+    using the faster Zig-based VocabPartition under the hood.
+    """
+
+    def __init__(self, partition: Any, tokenizer: Any, language: str = "python"):
+        """Initialize with a VocabPartition.
+
+        Args:
+            partition: VocabPartition instance
+            tokenizer: The model's tokenizer
+            language: Programming language
+        """
+        self._partition = partition
+        self._tokenizer = tokenizer
+        self._language = language
+        self._vocab_size = partition.vocab_size
+        self._initialized = True
+
+        # Import type category mappings
+        try:
+            from sglang.srt.constrained.ananke.zig.ffi import (
+                TYPE_CATEGORY_INTEGER,
+                TYPE_CATEGORY_FLOAT,
+                TYPE_CATEGORY_STRING,
+                TYPE_CATEGORY_BOOLEAN,
+                TYPE_CATEGORY_NONE_NULL,
+                TYPE_CATEGORY_IDENTIFIER,
+                TYPE_CATEGORY_KEYWORD,
+                TYPE_CATEGORY_BUILTIN,
+                TYPE_CATEGORY_ARITHMETIC_OP,
+                TYPE_CATEGORY_DELIMITER,
+                TYPE_CATEGORY_WHITESPACE,
+                TYPE_CATEGORY_UNKNOWN,
+            )
+        except ImportError:
+            from zig.ffi import (
+                TYPE_CATEGORY_INTEGER,
+                TYPE_CATEGORY_FLOAT,
+                TYPE_CATEGORY_STRING,
+                TYPE_CATEGORY_BOOLEAN,
+                TYPE_CATEGORY_NONE_NULL,
+                TYPE_CATEGORY_IDENTIFIER,
+                TYPE_CATEGORY_KEYWORD,
+                TYPE_CATEGORY_BUILTIN,
+                TYPE_CATEGORY_ARITHMETIC_OP,
+                TYPE_CATEGORY_DELIMITER,
+                TYPE_CATEGORY_WHITESPACE,
+                TYPE_CATEGORY_UNKNOWN,
+            )
+
+        # Map native categories to TokenCategory
+        self._native_to_token_category = {
+            TYPE_CATEGORY_INTEGER: TokenCategory.INT_LITERAL,
+            TYPE_CATEGORY_FLOAT: TokenCategory.FLOAT_LITERAL,
+            TYPE_CATEGORY_STRING: TokenCategory.STRING_LITERAL,
+            TYPE_CATEGORY_BOOLEAN: TokenCategory.BOOL_LITERAL,
+            TYPE_CATEGORY_NONE_NULL: TokenCategory.NONE_LITERAL,
+            TYPE_CATEGORY_IDENTIFIER: TokenCategory.IDENTIFIER,
+            TYPE_CATEGORY_KEYWORD: TokenCategory.KEYWORD,
+            TYPE_CATEGORY_BUILTIN: TokenCategory.BUILTIN,
+            TYPE_CATEGORY_ARITHMETIC_OP: TokenCategory.OPERATOR,
+            TYPE_CATEGORY_DELIMITER: TokenCategory.DELIMITER,
+            TYPE_CATEGORY_WHITESPACE: TokenCategory.WHITESPACE,
+            TYPE_CATEGORY_UNKNOWN: TokenCategory.UNKNOWN,
+        }
+
+        # Map TokenCategory to native categories
+        self._token_category_to_native = {
+            TokenCategory.INT_LITERAL: TYPE_CATEGORY_INTEGER,
+            TokenCategory.FLOAT_LITERAL: TYPE_CATEGORY_FLOAT,
+            TokenCategory.STRING_LITERAL: TYPE_CATEGORY_STRING,
+            TokenCategory.BOOL_LITERAL: TYPE_CATEGORY_BOOLEAN,
+            TokenCategory.NONE_LITERAL: TYPE_CATEGORY_NONE_NULL,
+            TokenCategory.IDENTIFIER: TYPE_CATEGORY_IDENTIFIER,
+            TokenCategory.KEYWORD: TYPE_CATEGORY_KEYWORD,
+            TokenCategory.BUILTIN: TYPE_CATEGORY_BUILTIN,
+            TokenCategory.OPERATOR: TYPE_CATEGORY_ARITHMETIC_OP,
+            TokenCategory.DELIMITER: TYPE_CATEGORY_DELIMITER,
+            TokenCategory.WHITESPACE: TYPE_CATEGORY_WHITESPACE,
+            TokenCategory.COMMENT: TYPE_CATEGORY_WHITESPACE,
+            TokenCategory.MIXED: TYPE_CATEGORY_UNKNOWN,
+            TokenCategory.UNKNOWN: TYPE_CATEGORY_UNKNOWN,
+        }
+
+        # Cached category masks
+        self._category_masks: Dict[TokenCategory, torch.Tensor] = {}
+
+    @property
+    def initialized(self) -> bool:
+        return self._initialized
+
+    @property
+    def vocab_size(self) -> int:
+        return self._vocab_size
+
+    @property
+    def is_native(self) -> bool:
+        """Check if using native Zig implementation."""
+        return self._partition.is_native
+
+    def initialize(self) -> None:
+        """No-op since partition is already initialized."""
+        pass
+
+    def by_category(self, category: TokenCategory) -> FrozenSet[int]:
+        """Get all token IDs of a category."""
+        native_cat = self._token_category_to_native.get(category)
+        if native_cat is None:
+            return frozenset()
+
+        tokens = set()
+        for token_id in range(self._vocab_size):
+            if self._partition.is_in_category(token_id, native_cat):
+                tokens.add(token_id)
+        return frozenset(tokens)
+
+    def get_category_mask(
+        self,
+        category: TokenCategory,
+        vocab_size: int,
+        device: str = "cpu",
+    ) -> torch.Tensor:
+        """Get a cached mask for tokens of a specific category."""
+        if category not in self._category_masks:
+            native_cat = self._token_category_to_native.get(category)
+            if native_cat is None:
+                mask = torch.zeros(vocab_size, dtype=torch.bool, device=device)
+            else:
+                packed_mask, _ = self._partition.get_category_mask(native_cat)
+                mask = self._partition.to_bool_tensor(packed_mask, device)
+            self._category_masks[category] = mask
+
+        return self._category_masks[category].to(device)
+
+    def create_mask(
+        self,
+        vocab_size: int,
+        device: str = "cpu",
+        *,
+        allow_categories: Optional[Set[TokenCategory]] = None,
+        block_categories: Optional[Set[TokenCategory]] = None,
+        allow_keywords: Optional[Set[str]] = None,
+        block_keywords: Optional[Set[str]] = None,
+    ) -> torch.Tensor:
+        """Create a boolean mask based on token categories."""
+        # Start with all True
+        mask = torch.ones(vocab_size, dtype=torch.bool, device=device)
+
+        if allow_categories is not None:
+            # Convert to native categories
+            native_cats = [
+                self._token_category_to_native[cat]
+                for cat in allow_categories
+                if cat in self._token_category_to_native
+            ]
+            if native_cats:
+                packed_mask, _ = self._partition.compute_type_mask(native_cats)
+                allow_mask = self._partition.to_bool_tensor(packed_mask, device)
+                mask &= allow_mask
+
+        if block_categories is not None:
+            for cat in block_categories:
+                native_cat = self._token_category_to_native.get(cat)
+                if native_cat is not None:
+                    packed_mask, _ = self._partition.get_category_mask(native_cat)
+                    block_mask = self._partition.to_bool_tensor(packed_mask, device)
+                    mask &= ~block_mask
+
+        # Keywords require decoding tokens - handle by iterating vocabulary
+        if allow_keywords is not None or block_keywords is not None:
+            # Build keyword index on first use
+            if not hasattr(self, "_keyword_index"):
+                self._keyword_index: Dict[str, Set[int]] = {}
+                keywords = get_language_keywords(self._language)
+                for kw in keywords:
+                    self._keyword_index[kw] = set()
+
+                for token_id in range(self._vocab_size):
+                    try:
+                        text = self._tokenizer.decode([token_id]).strip()
+                        if text in keywords:
+                            self._keyword_index[text].add(token_id)
+                    except Exception:
+                        pass
+
+            if allow_keywords is not None:
+                # Block all keywords not in allow_keywords
+                for kw, tokens in self._keyword_index.items():
+                    if kw not in allow_keywords:
+                        for token_id in tokens:
+                            if token_id < vocab_size:
+                                mask[token_id] = False
+
+            if block_keywords is not None:
+                # Block specific keywords
+                for kw in block_keywords:
+                    for token_id in self._keyword_index.get(kw, set()):
+                        if token_id < vocab_size:
+                            mask[token_id] = False
+
+        return mask
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get classification statistics."""
+        # Count tokens per category
+        category_counts: Dict[str, int] = {}
+        for cat in TokenCategory:
+            native_cat = self._token_category_to_native.get(cat)
+            if native_cat is not None:
+                count = 0
+                for token_id in range(self._vocab_size):
+                    if self._partition.is_in_category(token_id, native_cat):
+                        count += 1
+                if count > 0:
+                    category_counts[cat.name] = count
+
+        return {
+            "initialized": True,
+            "vocab_size": self._vocab_size,
+            "is_native": self.is_native,
+            "categories": category_counts,
+        }
 
 
 # ===========================================================================
@@ -999,3 +1296,58 @@ def supported_classifier_languages() -> List[str]:
         List of supported language names
     """
     return ["python", "zig", "rust", "typescript", "go", "kotlin", "swift"]
+
+
+def get_best_classifier(
+    tokenizer: Any,
+    language: str = "python",
+    prefer_native: bool = True,
+    use_disk_cache: bool = True,
+    cache_dir: Optional[Path] = None,
+) -> Any:
+    """Get the best available classifier for a tokenizer.
+
+    Automatically selects between:
+    1. Native Zig-based VocabPartition (10-50x faster) if available
+    2. Python TokenClassifier with disk caching as fallback
+
+    Args:
+        tokenizer: The model's tokenizer
+        language: Programming language
+        prefer_native: If True, try native implementation first
+        use_disk_cache: Whether to use persistent disk caching (Python fallback)
+        cache_dir: Optional custom cache directory (Python fallback)
+
+    Returns:
+        TokenClassifier or NativeTokenClassifier instance
+    """
+    if prefer_native:
+        # Try native first
+        partition = get_or_create_native_partition(tokenizer, language)
+        if partition is not None:
+            return NativeTokenClassifier(partition, tokenizer, language)
+
+    # Fall back to Python
+    return get_or_create_classifier(
+        tokenizer,
+        language=language,
+        use_disk_cache=use_disk_cache,
+        cache_dir=cache_dir,
+    )
+
+
+def is_native_classifier_available() -> bool:
+    """Check if native Zig-based classifier is available.
+
+    Returns:
+        True if native library is loaded and functional
+    """
+    try:
+        from sglang.srt.constrained.ananke.zig.ffi import is_native_available
+        return is_native_available()
+    except ImportError:
+        try:
+            from zig.ffi import is_native_available
+            return is_native_available()
+        except ImportError:
+            return False
