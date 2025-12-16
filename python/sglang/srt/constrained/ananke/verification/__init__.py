@@ -53,6 +53,23 @@ from .soft_verifier import (
     CombinedVerificationResult,
     create_soft_verifier,
 )
+from .execution import (
+    ExecutionVerifier,
+    ExecutionResult,
+    ExecutionScore,
+    TestCase,
+    StaticExecutionVerifier,
+    RestrictedExecutionVerifier,
+    create_execution_verifier,
+    generate_test_cases_from_signature,
+)
+from .collaborative import (
+    CollaborativeVerifier,
+    CollaborativeResult,
+    VerificationStrategy,
+    StrategyScore,
+    collaborative_verify,
+)
 
 __all__ = [
     # Rule-based verification
@@ -72,4 +89,19 @@ __all__ = [
     "HeuristicSoftVerifier",
     "CombinedVerificationResult",
     "create_soft_verifier",
+    # Execution verification (PoT)
+    "ExecutionVerifier",
+    "ExecutionResult",
+    "ExecutionScore",
+    "TestCase",
+    "StaticExecutionVerifier",
+    "RestrictedExecutionVerifier",
+    "create_execution_verifier",
+    "generate_test_cases_from_signature",
+    # Collaborative verification (CoT + PoT)
+    "CollaborativeVerifier",
+    "CollaborativeResult",
+    "VerificationStrategy",
+    "StrategyScore",
+    "collaborative_verify",
 ]
