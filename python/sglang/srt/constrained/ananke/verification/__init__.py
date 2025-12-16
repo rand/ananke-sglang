@@ -43,12 +43,33 @@ from .selector import (
     SelectionStrategy,
     SelectionResult,
 )
+from .soft_verifier import (
+    SoftVerifier,
+    SoftScore,
+    GenerationContext,
+    NullSoftVerifier,
+    EnsembleSoftVerifier,
+    HeuristicSoftVerifier,
+    CombinedVerificationResult,
+    create_soft_verifier,
+)
 
 __all__ = [
+    # Rule-based verification
     "ConstraintVerifier",
     "VerificationResult",
     "DomainScore",
+    # Best-of-N selection
     "BestOfNSelector",
     "SelectionStrategy",
     "SelectionResult",
+    # Soft verification (PRMs)
+    "SoftVerifier",
+    "SoftScore",
+    "GenerationContext",
+    "NullSoftVerifier",
+    "EnsembleSoftVerifier",
+    "HeuristicSoftVerifier",
+    "CombinedVerificationResult",
+    "create_soft_verifier",
 ]

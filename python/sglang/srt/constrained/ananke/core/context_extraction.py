@@ -57,6 +57,7 @@ from domains.types.constraint import (
     ANY,
 )
 from domains.types.environment import TypeEnvironment, EMPTY_ENVIRONMENT
+from domains.types.unification import is_subtype as full_is_subtype
 from domains.types.marking.marks import Mark, HoleMark, InconsistentMark
 from domains.types.marking.provenance import SourceSpan, Provenance
 from domains.types.marking.marked_ast import MarkedAST, MarkedASTNode, ASTNodeKind
@@ -521,29 +522,18 @@ class ContextExtractor:
         return (ret_rel + param_rel) / 2
 
     def _is_subtype(self, sub: Type, sup: Type) -> bool:
-        """Check if sub is a subtype of sup (simplified)."""
-        if sub == sup:
-            return True
-        if isinstance(sup, AnyType):
-            return True
-        if isinstance(sub, NeverType):
-            return True
+        """Check if sub is a subtype of sup.
 
-        # int <: float
-        if (isinstance(sub, PrimitiveType) and sub.name == "int" and
-            isinstance(sup, PrimitiveType) and sup.name == "float"):
-            return True
-
-        # bool <: int
-        if (isinstance(sub, PrimitiveType) and sub.name == "bool" and
-            isinstance(sup, PrimitiveType) and sup.name == "int"):
-            return True
-
-        # Union: sub in sup.members
-        if isinstance(sup, UnionType):
-            return any(self._is_subtype(sub, m) for m in sup.members)
-
-        return False
+        Uses the full is_subtype implementation from unification module which handles:
+        - Any/Never as top/bottom types
+        - HoleType as wildcard
+        - Union subtyping
+        - List/Set/Dict/Tuple covariance
+        - Function contravariant params, covariant return
+        - Protocol structural subtyping
+        - Numeric promotion (int <: float)
+        """
+        return full_is_subtype(sub, sup)
 
     def _generate_suggestions(self, mark: InconsistentMark) -> List[str]:
         """Generate suggestions for fixing a type error."""
