@@ -66,7 +66,7 @@ try:
         type_expecting,
     )
     from .environment import TypeEnvironment, EMPTY_ENVIRONMENT
-    from .unification import Substitution, EMPTY_SUBSTITUTION, unify
+    from .unification import Substitution, EMPTY_SUBSTITUTION, unify, is_subtype
     from .marking.marked_ast import MarkedAST, MarkedASTNode, ASTNodeKind
 except ImportError:
     from core.constraint import Satisfiability
@@ -100,7 +100,7 @@ except ImportError:
         type_expecting,
     )
     from domains.types.environment import TypeEnvironment, EMPTY_ENVIRONMENT
-    from domains.types.unification import Substitution, EMPTY_SUBSTITUTION, unify
+    from domains.types.unification import Substitution, EMPTY_SUBSTITUTION, unify, is_subtype
     from domains.types.marking.marked_ast import MarkedAST, MarkedASTNode, ASTNodeKind
 
 
@@ -934,34 +934,25 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
     def _types_compatible(self, actual: Type, expected: Type) -> bool:
         """Check if actual type is compatible with expected type.
 
-        This implements a simple subtyping check.
+        Uses proper subtyping with variance handling (covariance, contravariance).
+        Supports union types, protocol satisfaction, and function variance.
 
         Args:
             actual: The actual type
             expected: The expected type
 
         Returns:
-            True if actual is compatible with expected
+            True if actual is a subtype of (compatible with) expected
         """
-        # Any is compatible with anything
-        if isinstance(expected, AnyType) or isinstance(actual, AnyType):
-            return True
-
-        # Holes are compatible with anything
-        if isinstance(expected, HoleType) or isinstance(actual, HoleType):
-            return True
-
-        # Same type is compatible
-        if actual == expected:
-            return True
-
-        # int is compatible with float (numeric promotion)
-        if actual == INT and expected == FLOAT:
-            return True
-
-        # Check unification - result has is_success property
-        result = unify(actual, expected)
-        return result.is_success
+        # Use the full subtype checker which handles:
+        # - Any/Never as top/bottom types
+        # - HoleType as wildcard
+        # - Union subtyping
+        # - List/Set/Dict/Tuple covariance
+        # - Function contravariant params, covariant return
+        # - Protocol structural subtyping
+        # - Numeric promotion (int <: float)
+        return is_subtype(actual, expected)
 
     def checkpoint(self) -> TypeDomainCheckpoint:
         """Create a checkpoint of the current state.
