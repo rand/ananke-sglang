@@ -67,6 +67,16 @@ from search.generators import (
     create_constraint_checker,
     create_constraint_inferencer,
 )
+from search.beam import (
+    BeamCandidate,
+    BeamSearchConfig,
+    BeamSearchStats,
+    TokenScorer,
+    ConstraintScorer,
+    BeamSearch,
+    SimpleTokenScorer,
+    create_beam_search,
+)
 
 __all__ = [
     # Sudoku-style filler
@@ -90,4 +100,13 @@ __all__ = [
     "create_fill_generator",
     "create_constraint_checker",
     "create_constraint_inferencer",
+    # Beam search
+    "BeamCandidate",
+    "BeamSearchConfig",
+    "BeamSearchStats",
+    "TokenScorer",
+    "ConstraintScorer",
+    "BeamSearch",
+    "SimpleTokenScorer",
+    "create_beam_search",
 ]
