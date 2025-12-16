@@ -135,13 +135,23 @@ class BoundedTypeVar(Type):
         vars_set.update(self.lower_bound.free_type_vars())
         return frozenset(vars_set)
 
-    def substitute(self, substitution: Dict[str, Type]) -> Type:
-        """Apply substitution to this bounded type variable."""
-        if self.name in substitution:
-            return substitution[self.name]
+    def substitute(self, substitution) -> Type:
+        """Apply substitution to this bounded type variable.
+
+        Args:
+            substitution: Either a Dict[str, Type] mapping or a Substitution object
+        """
+        # Handle both dict and Substitution object
+        if hasattr(substitution, 'mapping'):
+            mapping = substitution.mapping
+        else:
+            mapping = substitution
+
+        if self.name in mapping:
+            return mapping[self.name]
         # Substitute in bounds too
-        new_upper = self.upper_bound.substitute(substitution)
-        new_lower = self.lower_bound.substitute(substitution)
+        new_upper = self.upper_bound.substitute(mapping)
+        new_lower = self.lower_bound.substitute(mapping)
         if new_upper == self.upper_bound and new_lower == self.lower_bound:
             return self
         return BoundedTypeVar(
