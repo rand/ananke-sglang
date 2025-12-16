@@ -152,7 +152,7 @@ class SyntaxDomain(ConstraintDomain[SyntaxConstraint]):
             All-True boolean mask (actual masking via grammar object)
         """
         # Return all-True mask - actual masking is done by grammar object
-        return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+        return context.create_mask(fill_value=True)
 
     def observe_token(
         self,

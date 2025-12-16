@@ -262,9 +262,10 @@ class TestMaskPoolIntegration:
 class TestLazyEvaluation:
     """Tests for lazy evaluation with budget control."""
 
-    def test_lazy_evaluator_initialized(self, grammar):
-        """Test that lazy evaluator is initialized."""
-        assert grammar._lazy_evaluator is not None
+    def test_evaluator_initialized(self, grammar):
+        """Test that an evaluator is initialized based on strategy."""
+        # Default strategy is TIERED, so tiered evaluator should be initialized
+        assert grammar._tiered_evaluator is not None
         assert grammar._evaluation_budget is not None
 
     def test_evaluation_budget_defaults(self, grammar):

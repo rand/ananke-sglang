@@ -55,6 +55,22 @@ from .lazy import (
     EvaluationBudget,
     LazyEvaluationResult,
     create_lazy_evaluator,
+    # Tiered evaluation
+    TieredConstraintEvaluator,
+    EvaluationTier,
+    TieredEvaluationResult,
+    DEFAULT_DOMAIN_TIERS,
+    create_tiered_evaluator,
+    # Parallel evaluation
+    ParallelDomainEvaluator,
+    ParallelEvaluationResult,
+    create_parallel_evaluator,
+)
+from .speculative import (
+    SpeculativeMaskCache,
+    SpeculativeCacheEntry,
+    SpeculativeCacheStats,
+    create_speculative_cache,
 )
 
 __all__ = [
@@ -88,4 +104,19 @@ __all__ = [
     "EvaluationBudget",
     "LazyEvaluationResult",
     "create_lazy_evaluator",
+    # Tiered
+    "TieredConstraintEvaluator",
+    "EvaluationTier",
+    "TieredEvaluationResult",
+    "DEFAULT_DOMAIN_TIERS",
+    "create_tiered_evaluator",
+    # Parallel
+    "ParallelDomainEvaluator",
+    "ParallelEvaluationResult",
+    "create_parallel_evaluator",
+    # Speculative
+    "SpeculativeMaskCache",
+    "SpeculativeCacheEntry",
+    "SpeculativeCacheStats",
+    "create_speculative_cache",
 ]

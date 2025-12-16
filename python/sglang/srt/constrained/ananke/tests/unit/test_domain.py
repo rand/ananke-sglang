@@ -96,6 +96,106 @@ class TestGenerationContext:
         assert "new_key" not in ctx1.metadata
 
 
+class TestMaskPoolMethods:
+    """Tests for MaskPool integration in GenerationContext."""
+
+    def test_create_mask_without_pool(self):
+        """create_mask works without pool (fallback allocation)."""
+        ctx = GenerationContext(vocab_size=100, device="cpu")
+        mask = ctx.create_mask(fill_value=True)
+
+        assert mask.shape == (100,)
+        assert mask.dtype == torch.bool
+        assert mask.all()
+
+    def test_create_mask_fill_false(self):
+        """create_mask with fill_value=False creates all-False mask."""
+        ctx = GenerationContext(vocab_size=100, device="cpu")
+        mask = ctx.create_mask(fill_value=False)
+
+        assert mask.shape == (100,)
+        assert not mask.any()
+
+    def test_borrowed_mask_without_pool(self):
+        """borrowed_mask works without pool (fallback allocation)."""
+        ctx = GenerationContext(vocab_size=100, device="cpu")
+
+        with ctx.borrowed_mask(fill_value=True) as mask:
+            assert mask.shape == (100,)
+            assert mask.all()
+            # Modify mask inside context
+            mask[0] = False
+            assert not mask[0]
+
+    def test_borrowed_mask_with_pool(self):
+        """borrowed_mask properly returns mask to pool."""
+        from core.domain import MaskPool
+
+        pool = MaskPool(vocab_size=100, device="cpu", pool_size=2)
+        ctx = GenerationContext(vocab_size=100, device="cpu", mask_pool=pool)
+
+        # Initially pool has 2 tensors
+        assert pool.available_count == 2
+
+        with ctx.borrowed_mask() as mask:
+            # During borrow, one tensor is taken
+            assert pool.available_count == 1
+            assert mask.shape == (100,)
+
+        # After context exit, tensor returned to pool
+        assert pool.available_count == 2
+
+    def test_borrowed_mask_releases_on_exception(self):
+        """borrowed_mask returns mask to pool even on exception."""
+        from core.domain import MaskPool
+
+        pool = MaskPool(vocab_size=100, device="cpu", pool_size=2)
+        ctx = GenerationContext(vocab_size=100, device="cpu", mask_pool=pool)
+
+        try:
+            with ctx.borrowed_mask() as mask:
+                assert pool.available_count == 1
+                raise ValueError("test exception")
+        except ValueError:
+            pass
+
+        # Tensor returned despite exception
+        assert pool.available_count == 2
+
+    def test_acquire_release_mask(self):
+        """acquire_mask and release_mask work correctly."""
+        from core.domain import MaskPool
+
+        pool = MaskPool(vocab_size=50, device="cpu", pool_size=3)
+        ctx = GenerationContext(vocab_size=50, device="cpu", mask_pool=pool)
+
+        mask1, handle1 = ctx.acquire_mask(fill_value=True)
+        assert pool.available_count == 2
+        assert mask1.all()
+
+        mask2, handle2 = ctx.acquire_mask(fill_value=False)
+        assert pool.available_count == 1
+        assert not mask2.any()
+
+        ctx.release_mask(handle1)
+        assert pool.available_count == 2
+
+        ctx.release_mask(handle2)
+        assert pool.available_count == 3
+
+    def test_extend_preserves_mask_pool(self):
+        """extend() preserves mask_pool reference."""
+        from core.domain import MaskPool
+
+        pool = MaskPool(vocab_size=100, device="cpu", pool_size=4)
+        ctx1 = GenerationContext(vocab_size=100, device="cpu", mask_pool=pool)
+
+        ctx2 = ctx1.extend(token_id=1, token_text="x")
+
+        # Same pool is shared
+        assert ctx2.mask_pool is ctx1.mask_pool
+
+
 class TestPassthroughDomain:
     """Tests for PassthroughDomain (placeholder implementation)."""
 

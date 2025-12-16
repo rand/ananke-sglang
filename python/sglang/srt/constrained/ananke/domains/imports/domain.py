@@ -201,23 +201,23 @@ class ImportDomain(ConstraintDomain[ImportConstraint]):
         """
         # Handle TOP/BOTTOM
         if constraint.is_top():
-            return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+            return context.create_mask(fill_value=True)
         if constraint.is_bottom():
-            return torch.zeros(context.vocab_size, dtype=torch.bool, device=context.device)
+            return context.create_mask(fill_value=False)
 
         # If no forbidden modules, allow all
         if not constraint.forbidden:
-            return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+            return context.create_mask(fill_value=True)
 
         # If not in import context, allow all
         if self._import_context == ImportContext.NONE:
-            return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+            return context.create_mask(fill_value=True)
 
         # Ensure classifier is initialized
         self._ensure_classifier_initialized(context)
 
         # Create base mask (all True)
-        mask = torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+        mask = context.create_mask(fill_value=True)
 
         # Only apply blocking if we're in module name position
         if self._import_context in (ImportContext.IMPORT_KEYWORD, ImportContext.FROM_KEYWORD, ImportContext.MODULE_NAME):

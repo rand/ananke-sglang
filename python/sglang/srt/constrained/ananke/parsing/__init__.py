@@ -54,6 +54,15 @@ from parsing.partial_ast import (
     PartialASTBuilder,
 )
 
+from parsing.incremental_cache import (
+    IncrementalParseCache,
+    ParseCheckpoint,
+    CacheStats as ParseCacheStats,
+    TextEdit,
+    DiffBasedUpdater,
+    create_cached_parser,
+)
+
 from parsing.languages.python import (
     PythonIncrementalParser,
     create_python_parser,
@@ -134,6 +143,13 @@ __all__ = [
     "HoleKind",
     "ASTDiff",
     "PartialASTBuilder",
+    # Incremental Cache
+    "IncrementalParseCache",
+    "ParseCheckpoint",
+    "ParseCacheStats",
+    "TextEdit",
+    "DiffBasedUpdater",
+    "create_cached_parser",
     # Python
     "PythonIncrementalParser",
     "create_python_parser",

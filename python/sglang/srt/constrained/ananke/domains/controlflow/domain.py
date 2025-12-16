@@ -190,15 +190,15 @@ class ControlFlowDomain(ConstraintDomain[ControlFlowConstraint]):
         """
         # Handle TOP/BOTTOM
         if constraint.is_top():
-            return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+            return context.create_mask(fill_value=True)
         if constraint.is_bottom():
-            return torch.zeros(context.vocab_size, dtype=torch.bool, device=context.device)
+            return context.create_mask(fill_value=False)
 
         # Ensure classifier is initialized
         self._ensure_classifier_initialized(context)
 
         # Create base mask (all True)
-        mask = torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+        mask = context.create_mask(fill_value=True)
 
         # Apply context-aware blocking
         mask = self._apply_context_blocking(mask, constraint, context)

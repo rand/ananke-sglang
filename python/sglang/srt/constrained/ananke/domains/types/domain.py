@@ -473,14 +473,14 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
         """
         # Handle TOP/BOTTOM constraints
         if constraint.is_top():
-            return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+            return context.create_mask(fill_value=True)
         if constraint.is_bottom():
-            return torch.zeros(context.vocab_size, dtype=torch.bool, device=context.device)
+            return context.create_mask(fill_value=False)
 
         # Get expected type
         expected = constraint.expected_type
         if expected is None or isinstance(expected, AnyType):
-            return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+            return context.create_mask(fill_value=True)
 
         # Ensure classifier and mask cache are initialized
         self._ensure_classifier_initialized(context)
@@ -496,7 +496,7 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
                 return mask
 
         # Fall back to incremental computation for compound types
-        mask = torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+        mask = context.create_mask(fill_value=True)
 
         # If we have a tokenizer, compute type-aware mask
         if context.tokenizer is not None:
@@ -565,7 +565,7 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
             Boolean tensor of valid tokens
         """
         # Default: allow all tokens (conservative)
-        mask = torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+        mask = context.create_mask(fill_value=True)
 
         # Budget for how many tokens to explicitly check
         # Higher budget = better precision, more latency

@@ -30,8 +30,9 @@ References:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Generic, List, Optional, Tuple, TypeVar
+from typing import TYPE_CHECKING, Any, Dict, Generator, Generic, List, Optional, Tuple, TypeVar
 
 import torch
 
@@ -215,6 +216,52 @@ class GenerationContext:
         """
         if self.mask_pool is not None and handle >= 0:
             self.mask_pool.release(handle)
+
+    @contextmanager
+    def borrowed_mask(self, fill_value: bool = True) -> Generator[torch.Tensor, None, None]:
+        """Context manager for borrowing a mask from the pool.
+
+        Automatically releases the mask when the context exits, ensuring
+        no memory leaks even if exceptions occur.
+
+        Args:
+            fill_value: Initial fill value (True for all-valid, False for all-blocked)
+
+        Yields:
+            A mask tensor that will be automatically returned to the pool.
+
+        Example:
+            with context.borrowed_mask() as mask:
+                mask[blocked_tokens] = False
+                return mask.clone()  # Return a copy if needed beyond the context
+        """
+        mask, handle = self.acquire_mask(fill_value)
+        try:
+            yield mask
+        finally:
+            self.release_mask(handle)
+
+    def create_mask(self, fill_value: bool = True) -> torch.Tensor:
+        """Create a mask tensor, using pool if available.
+
+        This is a convenience method that acquires a mask and returns it
+        without tracking the handle. Use this when you need to return
+        the mask and can't use the context manager.
+
+        NOTE: When using this method, the mask will be returned to the pool
+        when the pool runs out of tensors and allocates new ones. This is
+        safe but may cause additional allocations if called frequently.
+
+        For best performance, prefer borrowed_mask() when possible.
+
+        Args:
+            fill_value: Initial fill value
+
+        Returns:
+            A mask tensor
+        """
+        mask, _ = self.acquire_mask(fill_value)
+        return mask
 
 
 class ConstraintDomain(ABC, Generic[C]):
@@ -434,7 +481,7 @@ class PassthroughDomain(ConstraintDomain[C]):
         context: GenerationContext,
     ) -> torch.Tensor:
         """Return all-True mask (no constraints)."""
-        return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+        return context.create_mask(fill_value=True)
 
     def observe_token(
         self,

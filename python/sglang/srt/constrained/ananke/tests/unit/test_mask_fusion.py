@@ -861,3 +861,650 @@ class TestAdaptiveLazyEvaluator:
         result = adaptive.evaluate(constraints, context)
 
         assert isinstance(result, LazyEvaluationResult)
+
+
+class TestTieredConstraintEvaluator:
+    """Tests for TieredConstraintEvaluator."""
+
+    def test_create(self) -> None:
+        """Test creation."""
+        from masks.lazy import TieredConstraintEvaluator, create_tiered_evaluator
+
+        evaluator = create_tiered_evaluator(target_popcount=100)
+        assert isinstance(evaluator, TieredConstraintEvaluator)
+
+    def test_register(self) -> None:
+        """Test register method."""
+        from masks.lazy import TieredConstraintEvaluator, EvaluationTier
+
+        evaluator = TieredConstraintEvaluator()
+
+        def compute_fn(c, ctx):
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        evaluator.register("test", compute_fn, EvaluationTier.FAST)
+        assert "test" in evaluator._domains
+
+    def test_evaluate_basic(self) -> None:
+        """Test basic evaluate method."""
+        from masks.lazy import TieredConstraintEvaluator, TieredEvaluationResult, EvaluationTier
+
+        evaluator = TieredConstraintEvaluator(target_popcount=100)
+
+        def compute_fn(c, ctx):
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        evaluator.register("test", compute_fn, EvaluationTier.MEDIUM)
+
+        constraints = {"test": MockConstraint()}
+        context = MockContext()
+        result = evaluator.evaluate(constraints, context)
+
+        assert isinstance(result, TieredEvaluationResult)
+        assert result.fused_mask.shape[0] == context.vocab_size
+        assert "test" in result.evaluated_domains
+
+    def test_evaluate_tier_order(self) -> None:
+        """Test that tiers are evaluated in order."""
+        from masks.lazy import TieredConstraintEvaluator, EvaluationTier
+
+        evaluator = TieredConstraintEvaluator(target_popcount=0)  # Disable early termination
+        evaluation_order = []
+
+        def make_compute_fn(name):
+            def compute_fn(c, ctx):
+                evaluation_order.append(name)
+                return torch.ones(ctx.vocab_size, dtype=torch.bool)
+            return compute_fn
+
+        evaluator.register("slow", make_compute_fn("slow"), EvaluationTier.SLOW)
+        evaluator.register("fast", make_compute_fn("fast"), EvaluationTier.FAST)
+        evaluator.register("medium", make_compute_fn("medium"), EvaluationTier.MEDIUM)
+
+        constraints = {
+            "slow": MockConstraint(),
+            "fast": MockConstraint(),
+            "medium": MockConstraint(),
+        }
+        context = MockContext()
+        evaluator.evaluate(constraints, context)
+
+        # Should be: FAST (0) -> MEDIUM (1) -> SLOW (2)
+        assert evaluation_order == ["fast", "medium", "slow"]
+
+    def test_early_termination_on_popcount(self) -> None:
+        """Test early termination when popcount drops below threshold."""
+        from masks.lazy import TieredConstraintEvaluator, EvaluationTier
+
+        evaluator = TieredConstraintEvaluator(target_popcount=100)
+
+        def fast_fn(c, ctx):
+            # Return mask with only 50 allowed tokens
+            mask = torch.zeros(ctx.vocab_size, dtype=torch.bool)
+            mask[:50] = True
+            return mask
+
+        def slow_fn(c, ctx):
+            # This should be skipped due to early termination
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        evaluator.register("fast", fast_fn, EvaluationTier.FAST)
+        evaluator.register("slow", slow_fn, EvaluationTier.SLOW)
+
+        constraints = {"fast": MockConstraint(), "slow": MockConstraint()}
+        context = MockContext()
+        result = evaluator.evaluate(constraints, context)
+
+        assert result.early_termination
+        assert "fast" in result.evaluated_domains
+        assert "slow" in result.skipped_domains
+        assert result.final_popcount == 50
+
+    def test_early_termination_on_all_blocked(self) -> None:
+        """Test early termination when all tokens are blocked."""
+        from masks.lazy import TieredConstraintEvaluator, EvaluationTier
+
+        evaluator = TieredConstraintEvaluator(target_popcount=100)
+
+        def blocking_fn(c, ctx):
+            return torch.zeros(ctx.vocab_size, dtype=torch.bool)
+
+        def other_fn(c, ctx):
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        evaluator.register("blocking", blocking_fn, EvaluationTier.FAST)
+        evaluator.register("other", other_fn, EvaluationTier.SLOW)
+
+        constraints = {"blocking": MockConstraint(), "other": MockConstraint()}
+        context = MockContext()
+        result = evaluator.evaluate(constraints, context)
+
+        assert result.early_termination
+        assert result.final_popcount == 0
+        assert "other" in result.skipped_domains
+
+    def test_default_tiers_applied(self) -> None:
+        """Test that default tier assignments are applied."""
+        from masks.lazy import TieredConstraintEvaluator, DEFAULT_DOMAIN_TIERS, EvaluationTier
+
+        evaluator = TieredConstraintEvaluator()
+
+        def compute_fn(c, ctx):
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        # Register with default tier (should use DEFAULT_DOMAIN_TIERS)
+        evaluator.register("types", compute_fn)
+        evaluator.register("imports", compute_fn)
+
+        assert evaluator._tiers["types"] == DEFAULT_DOMAIN_TIERS["types"]
+        assert evaluator._tiers["imports"] == DEFAULT_DOMAIN_TIERS["imports"]
+
+    def test_set_tier(self) -> None:
+        """Test set_tier method."""
+        from masks.lazy import TieredConstraintEvaluator, EvaluationTier
+
+        evaluator = TieredConstraintEvaluator()
+
+        def compute_fn(c, ctx):
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        evaluator.register("test", compute_fn, EvaluationTier.SLOW)
+        evaluator.set_tier("test", EvaluationTier.FAST)
+
+        assert evaluator._tiers["test"] == EvaluationTier.FAST
+
+    def test_set_target_popcount(self) -> None:
+        """Test set_target_popcount method."""
+        from masks.lazy import TieredConstraintEvaluator
+
+        evaluator = TieredConstraintEvaluator(target_popcount=100)
+        evaluator.set_target_popcount(50)
+
+        assert evaluator._target_popcount == 50
+
+    def test_tiers_processed_count(self) -> None:
+        """Test that tiers_processed is counted correctly."""
+        from masks.lazy import TieredConstraintEvaluator, EvaluationTier
+
+        evaluator = TieredConstraintEvaluator(target_popcount=0)  # Disable early termination
+
+        def compute_fn(c, ctx):
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        # Register domains in 3 different tiers
+        evaluator.register("fast", compute_fn, EvaluationTier.FAST)
+        evaluator.register("medium", compute_fn, EvaluationTier.MEDIUM)
+        evaluator.register("slow", compute_fn, EvaluationTier.SLOW)
+
+        constraints = {
+            "fast": MockConstraint(),
+            "medium": MockConstraint(),
+            "slow": MockConstraint(),
+        }
+        context = MockContext()
+        result = evaluator.evaluate(constraints, context)
+
+        assert result.tiers_processed == 3
+
+
+class TestParallelDomainEvaluator:
+    """Tests for ParallelDomainEvaluator."""
+
+    def test_create(self) -> None:
+        """Test creating a parallel evaluator."""
+        from masks.lazy import ParallelDomainEvaluator, create_parallel_evaluator
+
+        evaluator = ParallelDomainEvaluator()
+        assert evaluator._max_workers == 4
+
+        evaluator2 = create_parallel_evaluator(max_workers=2)
+        assert evaluator2._max_workers == 2
+
+    def test_register(self) -> None:
+        """Test registering domains."""
+        from masks.lazy import ParallelDomainEvaluator
+
+        evaluator = ParallelDomainEvaluator()
+
+        def compute_fn(c, ctx):
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        evaluator.register("test", compute_fn)
+        assert "test" in evaluator._domains
+
+        evaluator.unregister("test")
+        assert "test" not in evaluator._domains
+
+    def test_evaluate_basic(self) -> None:
+        """Test basic parallel evaluation."""
+        from masks.lazy import ParallelDomainEvaluator, ParallelEvaluationResult
+
+        evaluator = ParallelDomainEvaluator()
+
+        def compute_fn(c, ctx):
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        evaluator.register("test", compute_fn)
+
+        constraints = {"test": MockConstraint()}
+        context = MockContext()
+
+        try:
+            result = evaluator.evaluate(constraints, context)
+
+            assert isinstance(result, ParallelEvaluationResult)
+            assert result.fused_mask.shape[0] == context.vocab_size
+            assert "test" in result.evaluated_domains
+        finally:
+            evaluator.shutdown()
+
+    def test_evaluate_multiple_domains(self) -> None:
+        """Test parallel evaluation of multiple domains."""
+        from masks.lazy import ParallelDomainEvaluator
+
+        evaluator = ParallelDomainEvaluator(max_workers=4)
+
+        def compute_fn_a(c, ctx):
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        def compute_fn_b(c, ctx):
+            mask = torch.ones(ctx.vocab_size, dtype=torch.bool)
+            mask[50:] = False
+            return mask
+
+        def compute_fn_c(c, ctx):
+            mask = torch.ones(ctx.vocab_size, dtype=torch.bool)
+            mask[:25] = False
+            return mask
+
+        evaluator.register("domain_a", compute_fn_a)
+        evaluator.register("domain_b", compute_fn_b)
+        evaluator.register("domain_c", compute_fn_c)
+
+        constraints = {
+            "domain_a": MockConstraint(),
+            "domain_b": MockConstraint(),
+            "domain_c": MockConstraint(),
+        }
+        context = MockContext()
+
+        try:
+            result = evaluator.evaluate(constraints, context)
+
+            # All domains should be evaluated
+            assert len(result.evaluated_domains) == 3
+
+            # Fused mask should be intersection: [25:50] = True
+            assert result.final_popcount == 25
+        finally:
+            evaluator.shutdown()
+
+    def test_early_termination_on_empty(self) -> None:
+        """Test early termination when mask becomes empty."""
+        from masks.lazy import ParallelDomainEvaluator
+        import time
+
+        evaluator = ParallelDomainEvaluator(max_workers=4)
+
+        def fast_blocker(c, ctx):
+            # Returns empty mask immediately
+            return torch.zeros(ctx.vocab_size, dtype=torch.bool)
+
+        def slow_domain(c, ctx):
+            # Takes some time
+            time.sleep(0.1)
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        evaluator.register("fast_blocker", fast_blocker)
+        evaluator.register("slow_domain", slow_domain)
+
+        constraints = {
+            "fast_blocker": MockConstraint(),
+            "slow_domain": MockConstraint(),
+        }
+        context = MockContext()
+
+        try:
+            result = evaluator.evaluate(constraints, context)
+
+            # Should have early terminated
+            assert result.early_termination
+            assert result.final_popcount == 0
+        finally:
+            evaluator.shutdown()
+
+    def test_domain_times_tracked(self) -> None:
+        """Test that individual domain times are tracked."""
+        from masks.lazy import ParallelDomainEvaluator
+        import time
+
+        evaluator = ParallelDomainEvaluator()
+
+        def slow_domain(c, ctx):
+            time.sleep(0.01)  # 10ms
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        evaluator.register("slow", slow_domain)
+
+        constraints = {"slow": MockConstraint()}
+        context = MockContext()
+
+        try:
+            result = evaluator.evaluate(constraints, context)
+
+            assert "slow" in result.domain_times_ns
+            # Should be at least 10ms = 10_000_000 ns
+            assert result.domain_times_ns["slow"] >= 5_000_000  # Allow for timing variation
+        finally:
+            evaluator.shutdown()
+
+    def test_context_manager(self) -> None:
+        """Test using evaluator as context manager."""
+        from masks.lazy import ParallelDomainEvaluator
+
+        def compute_fn(c, ctx):
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        with ParallelDomainEvaluator() as evaluator:
+            evaluator.register("test", compute_fn)
+            result = evaluator.evaluate(
+                {"test": MockConstraint()},
+                MockContext(),
+            )
+            assert "test" in result.evaluated_domains
+
+        # Executor should be shut down
+        assert evaluator._executor is None
+
+    def test_unregistered_domain_ignored(self) -> None:
+        """Test that unregistered domains in constraints are ignored."""
+        from masks.lazy import ParallelDomainEvaluator
+
+        evaluator = ParallelDomainEvaluator()
+
+        def compute_fn(c, ctx):
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        evaluator.register("registered", compute_fn)
+
+        constraints = {
+            "registered": MockConstraint(),
+            "unregistered": MockConstraint(),
+        }
+        context = MockContext()
+
+        try:
+            result = evaluator.evaluate(constraints, context)
+
+            assert "registered" in result.evaluated_domains
+            assert "unregistered" not in result.evaluated_domains
+            assert "unregistered" not in result.cancelled_domains
+        finally:
+            evaluator.shutdown()
+
+    def test_empty_constraints(self) -> None:
+        """Test evaluation with no constraints."""
+        from masks.lazy import ParallelDomainEvaluator
+
+        evaluator = ParallelDomainEvaluator()
+
+        def compute_fn(c, ctx):
+            return torch.ones(ctx.vocab_size, dtype=torch.bool)
+
+        evaluator.register("test", compute_fn)
+
+        result = evaluator.evaluate({}, MockContext())
+
+        assert len(result.evaluated_domains) == 0
+        assert result.final_popcount == 100  # All true
+
+    def test_parallel_speedup(self) -> None:
+        """Test that parallel evaluation is faster than sequential."""
+        from masks.lazy import ParallelDomainEvaluator
+        import time
+
+        evaluator = ParallelDomainEvaluator(max_workers=4)
+
+        def slow_domain(name):
+            def fn(c, ctx):
+                time.sleep(0.02)  # 20ms each
+                return torch.ones(ctx.vocab_size, dtype=torch.bool)
+            return fn
+
+        # Register 4 slow domains
+        for i in range(4):
+            evaluator.register(f"domain_{i}", slow_domain(f"domain_{i}"))
+
+        constraints = {f"domain_{i}": MockConstraint() for i in range(4)}
+        context = MockContext()
+
+        try:
+            start = time.perf_counter()
+            result = evaluator.evaluate(constraints, context)
+            elapsed = time.perf_counter() - start
+
+            # Sequential would take ~80ms, parallel should be ~20-40ms
+            # Using generous threshold for CI stability
+            assert elapsed < 0.1  # Should be well under 100ms
+            assert len(result.evaluated_domains) == 4
+        finally:
+            evaluator.shutdown()
+
+
+class TestSpeculativeMaskCache:
+    """Tests for SpeculativeMaskCache."""
+
+    def test_create(self) -> None:
+        """Test creating a speculative cache."""
+        from masks.speculative import SpeculativeMaskCache, create_speculative_cache
+
+        def compute_fn(state, ctx):
+            return torch.ones(100, dtype=torch.bool)
+
+        cache = SpeculativeMaskCache(compute_fn)
+        assert cache._lookahead_depth == 3
+        assert cache._max_cache_size == 64
+        cache.shutdown()
+
+        cache2 = create_speculative_cache(compute_fn, lookahead_depth=5)
+        assert cache2._lookahead_depth == 5
+        cache2.shutdown()
+
+    def test_get_or_compute_miss(self) -> None:
+        """Test cache miss - compute and cache."""
+        from masks.speculative import SpeculativeMaskCache
+
+        compute_count = [0]
+
+        def compute_fn(state, ctx):
+            compute_count[0] += 1
+            return torch.ones(100, dtype=torch.bool)
+
+        with SpeculativeMaskCache(compute_fn) as cache:
+            result = cache.get_or_compute("state1", "context1")
+
+            assert result.shape[0] == 100
+            assert result.all()
+            assert compute_count[0] == 1
+
+            stats = cache.get_stats()
+            assert stats.misses == 1
+            assert stats.hits == 0
+
+    def test_get_or_compute_hit(self) -> None:
+        """Test cache hit - return cached mask."""
+        from masks.speculative import SpeculativeMaskCache
+
+        compute_count = [0]
+
+        def compute_fn(state, ctx):
+            compute_count[0] += 1
+            return torch.ones(100, dtype=torch.bool)
+
+        with SpeculativeMaskCache(compute_fn) as cache:
+            # First call - miss
+            cache.get_or_compute("state1", "context1")
+            assert compute_count[0] == 1
+
+            # Second call with same args - hit
+            cache.get_or_compute("state1", "context1")
+            assert compute_count[0] == 1  # Not recomputed
+
+            stats = cache.get_stats()
+            assert stats.misses == 1
+            assert stats.hits == 1
+            assert stats.hit_rate == 0.5
+
+    def test_precompute(self) -> None:
+        """Test precomputation of likely next tokens."""
+        from masks.speculative import SpeculativeMaskCache
+        import time
+
+        compute_count = [0]
+
+        def compute_fn(state, ctx):
+            compute_count[0] += 1
+            time.sleep(0.01)  # Simulate some work
+            return torch.ones(100, dtype=torch.bool)
+
+        with SpeculativeMaskCache(compute_fn, lookahead_depth=2) as cache:
+            # Precompute for likely tokens
+            cache.precompute([1, 2, 3, 4, 5], "state1", "context1")
+
+            # Wait for precomputation to complete
+            time.sleep(0.1)
+
+            stats = cache.get_stats()
+            # Only lookahead_depth=2 should be precomputed
+            assert stats.precompute_requests == 2
+
+    def test_precompute_hit(self) -> None:
+        """Test that precomputed masks result in cache hits."""
+        from masks.speculative import SpeculativeMaskCache
+        import time
+
+        compute_count = [0]
+
+        def compute_fn(state, ctx):
+            compute_count[0] += 1
+            return torch.ones(100, dtype=torch.bool)
+
+        def transition_fn(state, token):
+            return (state, token)
+
+        with SpeculativeMaskCache(
+            compute_fn,
+            lookahead_depth=3,
+            state_transition_fn=transition_fn,
+        ) as cache:
+            # Precompute for likely tokens
+            cache.precompute([1, 2, 3], "state1", "context1")
+
+            # Wait for precomputation
+            time.sleep(0.1)
+
+            # Now access a precomputed state
+            result = cache.get_or_compute(("state1", 1), "context1")
+
+            assert result.shape[0] == 100
+            stats = cache.get_stats()
+            assert stats.hits >= 1  # Should hit precomputed entry
+
+    def test_lru_eviction(self) -> None:
+        """Test LRU eviction when cache is full."""
+        from masks.speculative import SpeculativeMaskCache
+
+        def compute_fn(state, ctx):
+            return torch.ones(100, dtype=torch.bool)
+
+        with SpeculativeMaskCache(compute_fn, max_cache_size=3) as cache:
+            # Fill cache
+            cache.get_or_compute("state1", "ctx")
+            cache.get_or_compute("state2", "ctx")
+            cache.get_or_compute("state3", "ctx")
+
+            # Access state1 to make it recently used
+            cache.get_or_compute("state1", "ctx")
+
+            # Add new entry - should evict state2 (oldest unused)
+            cache.get_or_compute("state4", "ctx")
+
+            # state1 should still be cached (was accessed)
+            cache.get_or_compute("state1", "ctx")
+            # state2 should be evicted
+            initial_misses = cache.get_stats().misses
+            cache.get_or_compute("state2", "ctx")
+            # Should be a miss since state2 was evicted
+            assert cache.get_stats().misses == initial_misses + 1
+
+    def test_clear(self) -> None:
+        """Test clearing the cache."""
+        from masks.speculative import SpeculativeMaskCache
+
+        def compute_fn(state, ctx):
+            return torch.ones(100, dtype=torch.bool)
+
+        with SpeculativeMaskCache(compute_fn) as cache:
+            cache.get_or_compute("state1", "ctx")
+            cache.get_or_compute("state2", "ctx")
+
+            cache.clear()
+
+            # After clear, should miss
+            initial_misses = cache.get_stats().misses
+            cache.get_or_compute("state1", "ctx")
+            assert cache.get_stats().misses == initial_misses + 1
+
+    def test_stats_tracking(self) -> None:
+        """Test statistics tracking."""
+        from masks.speculative import SpeculativeMaskCache
+
+        def compute_fn(state, ctx):
+            return torch.ones(100, dtype=torch.bool)
+
+        with SpeculativeMaskCache(compute_fn) as cache:
+            # Generate some activity
+            cache.get_or_compute("s1", "c")  # Miss
+            cache.get_or_compute("s1", "c")  # Hit
+            cache.get_or_compute("s2", "c")  # Miss
+            cache.get_or_compute("s1", "c")  # Hit
+            cache.get_or_compute("s2", "c")  # Hit
+
+            stats = cache.get_stats()
+            assert stats.misses == 2
+            assert stats.hits == 3
+            assert stats.hit_rate == 0.6
+
+    def test_context_manager(self) -> None:
+        """Test using cache as context manager."""
+        from masks.speculative import SpeculativeMaskCache
+
+        def compute_fn(state, ctx):
+            return torch.ones(100, dtype=torch.bool)
+
+        with SpeculativeMaskCache(compute_fn) as cache:
+            result = cache.get_or_compute("state", "ctx")
+            assert result.shape[0] == 100
+
+    def test_concurrent_precompute(self) -> None:
+        """Test concurrent precomputation doesn't duplicate work."""
+        from masks.speculative import SpeculativeMaskCache
+        import time
+
+        compute_count = [0]
+
+        def compute_fn(state, ctx):
+            compute_count[0] += 1
+            time.sleep(0.02)
+            return torch.ones(100, dtype=torch.bool)
+
+        with SpeculativeMaskCache(compute_fn, lookahead_depth=3) as cache:
+            # Request precompute twice for same tokens
+            cache.precompute([1, 2, 3], "state", "ctx")
+            cache.precompute([1, 2, 3], "state", "ctx")
+
+            # Wait for completion
+            time.sleep(0.2)
+
+            # Should only have computed each once
+            assert compute_count[0] <= 3  # At most 3 unique states

@@ -417,19 +417,19 @@ class SemanticDomain(ConstraintDomain[SemanticConstraint]):
         """
         # Handle TOP/BOTTOM
         if constraint.is_top():
-            return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+            return context.create_mask(fill_value=True)
         if constraint.is_bottom():
-            return torch.zeros(context.vocab_size, dtype=torch.bool, device=context.device)
+            return context.create_mask(fill_value=False)
 
         # If aggressive mode is off or no formulas, return all-True
         if not self._aggressive_mode or constraint.formula_count() == 0:
-            return torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+            return context.create_mask(fill_value=True)
 
         # Ensure classifier is initialized
         self._ensure_classifier_initialized(context)
 
         # Create base mask (all True)
-        mask = torch.ones(context.vocab_size, dtype=torch.bool, device=context.device)
+        mask = context.create_mask(fill_value=True)
 
         # Extract bounds from constraint formulas
         self._update_variable_bounds(constraint)

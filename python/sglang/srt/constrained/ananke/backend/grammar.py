@@ -55,6 +55,13 @@ try:
         EvaluationBudget,
         EvaluationPriority,
         LazyConstraintEvaluator,
+        TieredConstraintEvaluator,
+        EvaluationTier,
+        DEFAULT_DOMAIN_TIERS,
+        ParallelDomainEvaluator,
+    )
+    from ..masks.speculative import (
+        SpeculativeMaskCache,
     )
 except ImportError:
     from core.checkpoint import (
@@ -72,6 +79,13 @@ except ImportError:
         EvaluationBudget,
         EvaluationPriority,
         LazyConstraintEvaluator,
+        TieredConstraintEvaluator,
+        EvaluationTier,
+        DEFAULT_DOMAIN_TIERS,
+        ParallelDomainEvaluator,
+    )
+    from masks.speculative import (
+        SpeculativeMaskCache,
     )
 
 if TYPE_CHECKING:
@@ -80,6 +94,23 @@ if TYPE_CHECKING:
     from ..adaptive.intensity import ConstraintIntensity
 
 logger = logging.getLogger(__name__)
+
+from enum import Enum, auto
+
+
+class EvaluationStrategy(Enum):
+    """Strategy for evaluating domain constraints.
+
+    LAZY: Budget-limited lazy evaluation with priority ordering
+    TIERED: Tier-based evaluation with early termination on popcount
+    PARALLEL: Parallel domain evaluation with early termination
+    EAGER: Evaluate all domains sequentially (original behavior)
+    """
+
+    LAZY = auto()
+    TIERED = auto()
+    PARALLEL = auto()
+    EAGER = auto()
 
 
 class AnankeGrammar(BaseGrammarObject):
@@ -117,6 +148,11 @@ class AnankeGrammar(BaseGrammarObject):
         mask_pool_size: int = 8,
         constraint_spec: Optional["ConstraintSpec"] = None,
         intensity: Optional["ConstraintIntensity"] = None,
+        evaluation_strategy: EvaluationStrategy = EvaluationStrategy.TIERED,
+        enable_speculative_cache: bool = True,
+        speculative_lookahead: int = 3,
+        tiered_target_popcount: int = 100,
+        parallel_workers: int = 4,
     ):
         """Initialize AnankeGrammar.
 
@@ -138,6 +174,12 @@ class AnankeGrammar(BaseGrammarObject):
                 type context, import context, and semantic constraints.
             intensity: Constraint intensity level for this grammar.
                 Determines which domains are active for mask computation.
+            evaluation_strategy: Strategy for domain evaluation (default: TIERED).
+                TIERED is recommended for best performance.
+            enable_speculative_cache: Enable speculative mask precomputation.
+            speculative_lookahead: Number of tokens to precompute ahead.
+            tiered_target_popcount: Target popcount for early termination in tiered mode.
+            parallel_workers: Number of workers for parallel evaluation.
         """
         super().__init__()
         self.syntax_grammar = syntax_grammar
@@ -150,6 +192,13 @@ class AnankeGrammar(BaseGrammarObject):
         self._mask_pool_size = mask_pool_size
         self.constraint_spec = constraint_spec
         self.intensity = intensity
+
+        # Evaluation strategy configuration
+        self._evaluation_strategy = evaluation_strategy
+        self._tiered_target_popcount = tiered_target_popcount
+        self._parallel_workers = parallel_workers
+        self._speculative_lookahead = speculative_lookahead
+        self._enable_speculative_cache = enable_speculative_cache
 
         # Pre-allocated mask tensor pool to avoid per-token CUDA allocations
         self._mask_pool: Optional[MaskPool] = None
@@ -182,13 +231,30 @@ class AnankeGrammar(BaseGrammarObject):
         # Cache for computed domain masks
         self._domain_mask_cache: Dict[str, torch.Tensor] = {}
 
-        # Lazy evaluator for budget-limited domain evaluation
-        self._lazy_evaluator = self._init_lazy_evaluator()
+        # Initialize evaluators based on strategy
+        self._lazy_evaluator: Optional[LazyConstraintEvaluator] = None
+        self._tiered_evaluator: Optional[TieredConstraintEvaluator] = None
+        self._parallel_evaluator: Optional[ParallelDomainEvaluator] = None
+        self._speculative_cache: Optional[SpeculativeMaskCache] = None
+
         self._evaluation_budget = EvaluationBudget(
             max_time_ns=2_000_000,  # 2ms budget
             max_domains=5,
             min_selectivity=0.95,  # Stop if 95% of vocab blocked
         )
+
+        # Initialize evaluator based on strategy
+        if evaluation_strategy == EvaluationStrategy.LAZY:
+            self._lazy_evaluator = self._init_lazy_evaluator()
+        elif evaluation_strategy == EvaluationStrategy.TIERED:
+            self._tiered_evaluator = self._init_tiered_evaluator()
+        elif evaluation_strategy == EvaluationStrategy.PARALLEL:
+            self._parallel_evaluator = self._init_parallel_evaluator()
+        # EAGER uses no evaluator - direct sequential evaluation
+
+        # Initialize speculative cache if enabled
+        if enable_speculative_cache and vocab_size > 0:
+            self._speculative_cache = self._init_speculative_cache()
 
     def accept_token(self, token: int) -> None:
         """Accept a generated token, updating all domain constraints.
@@ -381,17 +447,19 @@ class AnankeGrammar(BaseGrammarObject):
             self._apply_domain_mask(vocab_mask, idx, domain_mask)
 
     def _fill_vocab_mask_lazy(self, vocab_mask: torch.Tensor, idx: int) -> None:
-        """Lazily evaluate domain masks with budget control.
+        """Evaluate domain masks using the configured evaluation strategy.
 
-        Domains are evaluated in priority order. If the budget is exceeded
-        or the mask is already sufficiently constrained, lower-priority
-        domains are skipped.
+        Domains are evaluated according to the configured strategy:
+        - LAZY: Budget-limited evaluation with priority ordering
+        - TIERED: Tier-based evaluation with early termination on popcount
+        - PARALLEL: Parallel evaluation with early termination
+        - EAGER: Sequential evaluation of all domains (handled in _fill_vocab_mask_eager)
 
         Args:
             vocab_mask: Bitmask tensor to fill [batch_size, mask_size]
             idx: Index into the batch for this request
         """
-        # Build constraints dict for lazy evaluator
+        # Build constraints dict
         constraints = {}
         for domain_name in self.domains:
             if domain_name == "syntax":
@@ -404,16 +472,43 @@ class AnankeGrammar(BaseGrammarObject):
         if not constraints:
             return  # Nothing to evaluate
 
-        # Use lazy evaluator with budget
-        result = self._lazy_evaluator.evaluate(
-            constraints=constraints,
-            context=self.context,
-            budget=self._evaluation_budget,
-        )
+        fused_mask = None
+
+        if self._evaluation_strategy == EvaluationStrategy.LAZY:
+            # Budget-limited lazy evaluation
+            if self._lazy_evaluator is not None:
+                result = self._lazy_evaluator.evaluate(
+                    constraints=constraints,
+                    context=self.context,
+                    budget=self._evaluation_budget,
+                )
+                fused_mask = result.fused_mask
+
+        elif self._evaluation_strategy == EvaluationStrategy.TIERED:
+            # Tier-based evaluation with early termination
+            if self._tiered_evaluator is not None:
+                result = self._tiered_evaluator.evaluate(constraints, self.context)
+                fused_mask = result.fused_mask
+
+        elif self._evaluation_strategy == EvaluationStrategy.PARALLEL:
+            # Parallel evaluation with early termination
+            if self._parallel_evaluator is not None:
+                result = self._parallel_evaluator.evaluate(constraints, self.context)
+                fused_mask = result.fused_mask
+
+        else:
+            # EAGER: Fall through to manual sequential (shouldn't reach here)
+            for domain_name, constraint in constraints.items():
+                domain = self.domains[domain_name]
+                domain_mask = domain.token_mask(constraint, self.context)
+                if fused_mask is None:
+                    fused_mask = domain_mask.clone()
+                else:
+                    fused_mask &= domain_mask
 
         # Apply the fused mask
-        if result.fused_mask is not None:
-            self._apply_domain_mask(vocab_mask, idx, result.fused_mask)
+        if fused_mask is not None:
+            self._apply_domain_mask(vocab_mask, idx, fused_mask)
 
     def allocate_vocab_mask(
         self, vocab_size: int, batch_size: int, device
@@ -775,6 +870,85 @@ class AnankeGrammar(BaseGrammarObject):
 
         return evaluator
 
+    def _init_tiered_evaluator(self) -> TieredConstraintEvaluator:
+        """Initialize tiered constraint evaluator.
+
+        Creates a tiered evaluator that organizes domains into tiers
+        based on evaluation cost and selectivity. Uses early termination
+        when the mask popcount falls below the target threshold.
+
+        Returns:
+            Configured TieredConstraintEvaluator
+        """
+        evaluator = TieredConstraintEvaluator(target_popcount=self._tiered_target_popcount)
+
+        # Assign domains to tiers based on typical cost/selectivity
+        tier_assignments = {
+            "syntax": EvaluationTier.FAST,      # ~50μs, fundamental
+            "controlflow": EvaluationTier.FAST, # ~100μs, structural
+            "imports": EvaluationTier.MEDIUM,   # ~200μs, moderate
+            "types": EvaluationTier.SLOW,       # ~500μs, type checking
+            "semantics": EvaluationTier.OPTIONAL, # ~1ms, expensive
+        }
+
+        for domain_name, domain in self.domains.items():
+            tier = tier_assignments.get(domain_name, EvaluationTier.MEDIUM)
+            evaluator.register(domain_name, domain.token_mask, tier)
+
+        return evaluator
+
+    def _init_parallel_evaluator(self) -> ParallelDomainEvaluator:
+        """Initialize parallel domain evaluator.
+
+        Creates a parallel evaluator that runs domain mask computations
+        concurrently using a thread pool with early termination when
+        the fused mask becomes empty.
+
+        Returns:
+            Configured ParallelDomainEvaluator
+        """
+        evaluator = ParallelDomainEvaluator(max_workers=self._parallel_workers)
+
+        for domain_name, domain in self.domains.items():
+            if domain_name != "syntax":  # Syntax handled separately
+                evaluator.register(domain_name, domain.token_mask)
+
+        return evaluator
+
+    def _init_speculative_cache(self) -> SpeculativeMaskCache:
+        """Initialize speculative mask cache.
+
+        Creates a speculative cache that precomputes masks for likely
+        next tokens while the model is computing logits. This hides
+        mask computation latency.
+
+        Returns:
+            Configured SpeculativeMaskCache
+        """
+        def compute_mask(state: int, context: GenerationContext) -> torch.Tensor:
+            """Compute fused domain mask for a state."""
+            mask = context.create_mask()
+            for domain_name, domain in self.domains.items():
+                if domain_name == "syntax":
+                    continue
+                domain_constraint = getattr(self.constraint, domain_name, None)
+                if domain_constraint is not None and not domain_constraint.is_top():
+                    domain_mask = domain.token_mask(domain_constraint, context)
+                    mask &= domain_mask
+            return mask
+
+        def state_transition(current_state: int, token: int) -> int:
+            """Compute next state after token (simple hash-based)."""
+            return hash((current_state, token)) & 0x7FFFFFFF
+
+        return SpeculativeMaskCache(
+            compute_fn=compute_mask,
+            lookahead_depth=self._speculative_lookahead,
+            max_workers=self._parallel_workers,
+            max_cache_size=64,
+            state_transition_fn=state_transition,
+        )
+
     # =========================================================================
     # Cache Metrics
     # =========================================================================
@@ -799,17 +973,42 @@ class AnankeGrammar(BaseGrammarObject):
             "domains_cached": list(self._domain_mask_cache.keys()),
         }
 
+    def get_evaluator_stats(self) -> Dict[str, Any]:
+        """Get evaluator statistics based on current strategy.
+
+        Returns statistics about domain evaluation from the active evaluator.
+
+        Returns:
+            Dictionary of evaluation statistics
+        """
+        stats: Dict[str, Any] = {
+            "evaluation_strategy": self._evaluation_strategy.name,
+        }
+
+        if self._evaluation_strategy == EvaluationStrategy.LAZY:
+            if self._lazy_evaluator is not None and hasattr(self._lazy_evaluator, 'stats'):
+                stats["lazy_stats"] = self._lazy_evaluator.stats
+        elif self._evaluation_strategy == EvaluationStrategy.TIERED:
+            if self._tiered_evaluator is not None and hasattr(self._tiered_evaluator, 'get_stats'):
+                stats["tiered_stats"] = self._tiered_evaluator.get_stats()
+        elif self._evaluation_strategy == EvaluationStrategy.PARALLEL:
+            if self._parallel_evaluator is not None and hasattr(self._parallel_evaluator, 'get_stats'):
+                stats["parallel_stats"] = self._parallel_evaluator.get_stats()
+
+        if self._speculative_cache is not None:
+            stats["speculative_stats"] = self._speculative_cache.get_stats().__dict__
+
+        return stats
+
     def get_lazy_evaluator_stats(self) -> Dict[str, Any]:
-        """Get lazy evaluator statistics.
+        """Get lazy evaluator statistics (deprecated, use get_evaluator_stats).
 
         Returns statistics about domain evaluation from the lazy evaluator.
 
         Returns:
             Dictionary of lazy evaluation statistics
         """
-        if hasattr(self._lazy_evaluator, 'stats'):
-            return self._lazy_evaluator.stats
-        return {"info": "Lazy evaluator stats not available"}
+        return self.get_evaluator_stats()
 
     def log_cache_summary(self) -> None:
         """Log cache performance summary.
