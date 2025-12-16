@@ -72,6 +72,23 @@ from .speculative import (
     SpeculativeCacheStats,
     create_speculative_cache,
 )
+from .pool import (
+    MaskPool,
+    MaskPoolStats,
+    MultiDeviceMaskPool,
+    create_mask_pool,
+    create_multi_device_pool,
+)
+from .cuda_fusion import (
+    CUDAMaskFuser,
+    CUDAFusionConfig,
+    CUDAFusionStats,
+    FusionBenchmark,
+    BatchedCUDAFuser,
+    DeviceSelectionStrategy,
+    create_cuda_fuser,
+    create_batched_fuser,
+)
 
 __all__ = [
     # Fuser
@@ -119,4 +136,19 @@ __all__ = [
     "SpeculativeCacheEntry",
     "SpeculativeCacheStats",
     "create_speculative_cache",
+    # Pool
+    "MaskPool",
+    "MaskPoolStats",
+    "MultiDeviceMaskPool",
+    "create_mask_pool",
+    "create_multi_device_pool",
+    # CUDA Fusion
+    "CUDAMaskFuser",
+    "CUDAFusionConfig",
+    "CUDAFusionStats",
+    "FusionBenchmark",
+    "BatchedCUDAFuser",
+    "DeviceSelectionStrategy",
+    "create_cuda_fuser",
+    "create_batched_fuser",
 ]
