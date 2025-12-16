@@ -282,20 +282,79 @@ class LSPCompletionProvider:
 # =============================================================================
 
 
-class LSPDiagnosticProvider:
-    """Provides diagnostics from LSP for verification.
+@dataclass
+class DiagnosticConfidence:
+    """Confidence score for a diagnostic.
 
-    Uses LSP diagnostics (errors/warnings) as soft signals
-    for code quality verification.
+    High confidence diagnostics (>= threshold) can trigger hard blocking.
+    """
+    confidence: float  # 0.0 to 1.0
+    is_type_error: bool  # True if this is a type-related error
+    source: str  # Source of the diagnostic (e.g., "pyright", "typescript")
+    can_hard_block: bool  # Whether this diagnostic can trigger hard blocking
+
+
+class LSPDiagnosticProvider:
+    """Provides diagnostics from LSP for verification with confidence scoring.
+
+    Phase 2.2 enhancement: Implements confidence-based hard blocking for
+    high-confidence type errors. When LSP reports a type error with
+    confidence >= 0.95, we hard-block tokens that would cause that error.
+
+    Uses LSP diagnostics (errors/warnings) as signals for code quality
+    verification, with confidence scoring for hard vs soft blocking.
 
     Attributes:
         diagnostics: Current diagnostics by document
         severity_weights: Scoring weights by severity
+        hard_block_threshold: Confidence threshold for hard blocking
+        enable_hard_blocking: Whether hard blocking is enabled
     """
 
-    def __init__(self):
-        """Initialize diagnostic provider."""
+    # Error codes that indicate type errors (language-specific)
+    TYPE_ERROR_CODES = frozenset({
+        # Python (Pyright/Pylsp)
+        "reportGeneralTypeIssues",
+        "reportArgumentType",
+        "reportReturnType",
+        "reportAssignmentType",
+        "reportIndexIssue",
+        "reportCallIssue",
+        # TypeScript
+        "2322",  # Type 'X' is not assignable to type 'Y'
+        "2345",  # Argument of type 'X' is not assignable to parameter of type 'Y'
+        "2339",  # Property 'X' does not exist on type 'Y'
+        "2304",  # Cannot find name 'X'
+        # Rust (rust-analyzer)
+        "E0308",  # mismatched types
+        "E0277",  # trait bound not satisfied
+        "E0382",  # use of moved value
+    })
+
+    # Sources with high reliability for type errors
+    HIGH_CONFIDENCE_SOURCES = frozenset({
+        "pyright",
+        "typescript",
+        "rust-analyzer",
+        "gopls",
+    })
+
+    def __init__(
+        self,
+        hard_block_threshold: float = 0.95,
+        enable_hard_blocking: bool = True,
+    ):
+        """Initialize diagnostic provider.
+
+        Args:
+            hard_block_threshold: Confidence threshold for hard blocking
+            enable_hard_blocking: Whether to enable hard blocking
+        """
         self._diagnostics: Dict[str, List[Diagnostic]] = {}
+        self._confidence_cache: Dict[str, List[DiagnosticConfidence]] = {}
+        self.hard_block_threshold = hard_block_threshold
+        self.enable_hard_blocking = enable_hard_blocking
+
         self.severity_weights = {
             DiagnosticSeverity.Error: 0.0,      # Errors reduce score to 0
             DiagnosticSeverity.Warning: 0.5,   # Warnings reduce by half
@@ -311,6 +370,10 @@ class LSPDiagnosticProvider:
             diagnostics: New diagnostics
         """
         self._diagnostics[uri] = diagnostics
+        # Compute confidence scores for new diagnostics
+        self._confidence_cache[uri] = [
+            self._compute_confidence(d) for d in diagnostics
+        ]
 
     def clear_diagnostics(self, uri: str) -> None:
         """Clear diagnostics for a document.
@@ -319,6 +382,120 @@ class LSPDiagnosticProvider:
             uri: Document URI
         """
         self._diagnostics.pop(uri, None)
+        self._confidence_cache.pop(uri, None)
+
+    def _compute_confidence(self, diagnostic: Diagnostic) -> DiagnosticConfidence:
+        """Compute confidence score for a diagnostic.
+
+        Confidence is based on:
+        - Source reliability (pyright, typescript > generic)
+        - Error code specificity
+        - Severity (errors > warnings)
+        - Presence of type information in message
+
+        Args:
+            diagnostic: The diagnostic to score
+
+        Returns:
+            DiagnosticConfidence with computed scores
+        """
+        confidence = 0.5  # Base confidence
+        source = diagnostic.source or "unknown"
+        is_type_error = False
+
+        # Boost confidence for reliable sources
+        if source.lower() in self.HIGH_CONFIDENCE_SOURCES:
+            confidence += 0.3
+
+        # Check if this is a type error
+        code = str(diagnostic.code) if diagnostic.code else ""
+        if code in self.TYPE_ERROR_CODES:
+            is_type_error = True
+            confidence += 0.15
+
+        # Check message for type-related keywords
+        message_lower = diagnostic.message.lower() if diagnostic.message else ""
+        type_keywords = ["type", "expected", "assignable", "cannot be", "incompatible"]
+        if any(kw in message_lower for kw in type_keywords):
+            is_type_error = True
+            confidence += 0.1
+
+        # Severity boost
+        if diagnostic.severity == DiagnosticSeverity.Error:
+            confidence += 0.1
+        elif diagnostic.severity == DiagnosticSeverity.Warning:
+            confidence += 0.05
+
+        # Cap at 1.0
+        confidence = min(1.0, confidence)
+
+        # Determine if this can hard-block
+        can_hard_block = (
+            self.enable_hard_blocking
+            and is_type_error
+            and confidence >= self.hard_block_threshold
+            and diagnostic.severity == DiagnosticSeverity.Error
+        )
+
+        return DiagnosticConfidence(
+            confidence=confidence,
+            is_type_error=is_type_error,
+            source=source,
+            can_hard_block=can_hard_block,
+        )
+
+    def get_high_confidence_type_errors(
+        self,
+        uri: str,
+        range_: Optional[Range] = None,
+    ) -> List[Tuple[Diagnostic, DiagnosticConfidence]]:
+        """Get high-confidence type errors that can trigger hard blocking.
+
+        Args:
+            uri: Document URI
+            range_: Optional range to filter
+
+        Returns:
+            List of (diagnostic, confidence) tuples for hard-blocking errors
+        """
+        diagnostics = self._diagnostics.get(uri, [])
+        confidences = self._confidence_cache.get(uri, [])
+
+        if not diagnostics or not confidences:
+            return []
+
+        result = []
+        for diag, conf in zip(diagnostics, confidences):
+            if not conf.can_hard_block:
+                continue
+
+            # Filter by range if specified
+            if range_ is not None:
+                if not self._ranges_overlap(diag.range, range_):
+                    continue
+
+            result.append((diag, conf))
+
+        return result
+
+    def should_hard_block(
+        self,
+        uri: str,
+        range_: Optional[Range] = None,
+    ) -> bool:
+        """Check if we should hard-block based on diagnostics.
+
+        Returns True if there's at least one high-confidence type error
+        in the given range.
+
+        Args:
+            uri: Document URI
+            range_: Optional range to check
+
+        Returns:
+            True if hard blocking should be triggered
+        """
+        return len(self.get_high_confidence_type_errors(uri, range_)) > 0
 
     def get_score(self, uri: str, range_: Optional[Range] = None) -> float:
         """Get verification score based on diagnostics.
@@ -385,15 +562,24 @@ class LSPTypeDomain:
     type checking. LSP responses are treated as soft hints that
     can further constrain (but never override) the internal domain.
 
-    Design: LSP is advisory only. If LSP suggests tokens A,B,C but
-    internal domain allows A,B,C,D,E, we use A,B,C. But if LSP fails
-    or times out, we fall back to A,B,C,D,E (soundness preserved).
+    Phase 2.2 Enhancements:
+    - Confidence-based hard blocking for high-confidence type errors
+    - Async prefetch for next-token prediction
+    - Type refinement from hover information
+    - Configurable hard-block threshold (default 0.95)
+
+    Design: LSP is advisory only EXCEPT for high-confidence type errors.
+    When LSP reports a type error with confidence >= 0.95 from a reliable
+    source (pyright, typescript, etc.), we hard-block tokens that would
+    cause that error.
 
     Attributes:
         client: LSP client
         completion_provider: Completion to token converter
-        diagnostic_provider: Diagnostic scorer
+        diagnostic_provider: Diagnostic scorer with confidence tracking
         fallback_enabled: Whether to fall back on LSP failure
+        hard_block_enabled: Whether to enable hard blocking for type errors
+        prefetch_enabled: Whether to enable async prefetch
     """
 
     def __init__(
@@ -402,6 +588,9 @@ class LSPTypeDomain:
         tokenizer: Any,
         vocab_size: int = 32000,
         fallback_enabled: bool = True,
+        hard_block_enabled: bool = True,
+        hard_block_threshold: float = 0.95,
+        prefetch_enabled: bool = True,
     ):
         """Initialize LSP type domain.
 
@@ -410,22 +599,37 @@ class LSPTypeDomain:
             tokenizer: Tokenizer instance
             vocab_size: Vocabulary size
             fallback_enabled: Whether to fall back on failure
+            hard_block_enabled: Whether to enable hard blocking
+            hard_block_threshold: Confidence threshold for hard blocking
+            prefetch_enabled: Whether to enable async prefetch
         """
         self._client = client
         self._tokenizer = tokenizer
         self._vocab_size = vocab_size
         self._fallback_enabled = fallback_enabled
+        self._hard_block_enabled = hard_block_enabled
+        self._prefetch_enabled = prefetch_enabled
 
         self.completion_provider = LSPCompletionProvider(
             client=client,
             tokenizer=tokenizer,
             vocab_size=vocab_size,
         )
-        self.diagnostic_provider = LSPDiagnosticProvider()
+        self.diagnostic_provider = LSPDiagnosticProvider(
+            hard_block_threshold=hard_block_threshold,
+            enable_hard_blocking=hard_block_enabled,
+        )
 
         # Document state
         self._open_documents: Dict[str, int] = {}  # uri -> version
         self._document_content: Dict[str, str] = {}
+
+        # Prefetch cache
+        self._prefetch_cache: Dict[str, Tuple[Position, Set[int]]] = {}
+        self._prefetch_task: Optional[asyncio.Task] = None
+
+        # Type refinement cache
+        self._type_cache: Dict[Tuple[str, int, int], str] = {}  # (uri, line, col) -> type
 
     async def start(self, root_uri: str) -> bool:
         """Start the LSP client.
@@ -515,22 +719,55 @@ class LSPTypeDomain:
         uri: str,
         position: Position,
         base_mask: Optional[torch.Tensor] = None,
+        check_diagnostics: bool = True,
     ) -> torch.Tensor:
-        """Get token mask enhanced with LSP completions.
+        """Get token mask enhanced with LSP completions and hard blocking.
+
+        Phase 2.2 enhancement: Now checks for high-confidence type errors
+        and can hard-block tokens that would cause those errors.
 
         Args:
             uri: Document URI
             position: Cursor position
             base_mask: Base mask from internal type domain
+            check_diagnostics: Whether to check diagnostics for hard blocking
 
         Returns:
             Token mask (True = allowed)
         """
+        # Check for prefetch cache hit
+        prefetch_key = uri
+        if prefetch_key in self._prefetch_cache:
+            cached_pos, cached_tokens = self._prefetch_cache[prefetch_key]
+            if cached_pos.line == position.line and cached_pos.character == position.character:
+                # Cache hit - use prefetched tokens
+                del self._prefetch_cache[prefetch_key]
+                if cached_tokens:
+                    mask = self.completion_provider.get_completion_mask(cached_tokens)
+                    if base_mask is not None:
+                        mask &= base_mask
+                    return mask
+
         # Start with base mask or all-allowed
         if base_mask is not None:
             mask = base_mask.clone()
         else:
             mask = torch.ones(self._vocab_size, dtype=torch.bool)
+
+        # Phase 2.2: Check for high-confidence type errors
+        if check_diagnostics and self._hard_block_enabled:
+            cursor_range = Range(start=position, end=position)
+            if self.diagnostic_provider.should_hard_block(uri, cursor_range):
+                # Get high-confidence type errors at this position
+                errors = self.diagnostic_provider.get_high_confidence_type_errors(uri, cursor_range)
+                for diag, conf in errors:
+                    logger.info(
+                        f"Hard-blocking due to type error (confidence={conf.confidence:.2f}): "
+                        f"{diag.message}"
+                    )
+                # Hard block by returning empty mask
+                mask.fill_(False)
+                return mask
 
         # Get LSP completions
         context = LSPCompletionContext(
@@ -552,27 +789,109 @@ class LSPTypeDomain:
             # LSP failed and fallback disabled - block everything
             mask.fill_(False)
 
+        # Start prefetch for next position if enabled
+        if self._prefetch_enabled:
+            next_position = Position(line=position.line, character=position.character + 1)
+            self._start_prefetch(uri, next_position)
+
         return mask
+
+    def _start_prefetch(self, uri: str, position: Position) -> None:
+        """Start async prefetch for next position.
+
+        Args:
+            uri: Document URI
+            position: Position to prefetch for
+        """
+        # Cancel existing prefetch if any
+        if self._prefetch_task is not None and not self._prefetch_task.done():
+            self._prefetch_task.cancel()
+
+        async def prefetch():
+            context = LSPCompletionContext(
+                uri=uri,
+                position=position,
+                prefix_text=self._document_content.get(uri, ""),
+                language=self._client.language,
+            )
+            try:
+                tokens = await self.completion_provider.get_completion_tokens(context)
+                self._prefetch_cache[uri] = (position, tokens)
+            except asyncio.CancelledError:
+                pass  # Expected if we start a new prefetch
+            except Exception as e:
+                logger.debug(f"Prefetch failed: {e}")
+
+        self._prefetch_task = asyncio.create_task(prefetch())
 
     async def get_type_at_position(
         self,
         uri: str,
         position: Position,
+        use_cache: bool = True,
     ) -> Optional[str]:
-        """Get type information at a position.
+        """Get type information at a position with caching.
 
         Args:
             uri: Document URI
             position: Cursor position
+            use_cache: Whether to use type cache
 
         Returns:
             Type string or None
         """
+        # Check cache
+        cache_key = (uri, position.line, position.character)
+        if use_cache and cache_key in self._type_cache:
+            return self._type_cache[cache_key]
+
         hover = await self._client.get_hover(uri, position)
         if hover:
             # Extract type from hover (language-specific parsing)
-            return self._extract_type_from_hover(hover)
+            type_str = self._extract_type_from_hover(hover)
+            if type_str:
+                self._type_cache[cache_key] = type_str
+            return type_str
         return None
+
+    async def refine_type_from_lsp(
+        self,
+        uri: str,
+        position: Position,
+        current_type: Optional[str] = None,
+    ) -> Optional[str]:
+        """Refine type using LSP hover information.
+
+        Uses LSP hover to get more specific type information that
+        can help constrain generation.
+
+        Args:
+            uri: Document URI
+            position: Cursor position
+            current_type: Current type from internal domain
+
+        Returns:
+            Refined type string or current_type if no refinement
+        """
+        lsp_type = await self.get_type_at_position(uri, position)
+        if lsp_type is None:
+            return current_type
+
+        # If no current type, use LSP type
+        if current_type is None:
+            return lsp_type
+
+        # If current type is generic (Any, object), prefer LSP type
+        generic_types = {"Any", "object", "unknown", "any"}
+        if current_type in generic_types:
+            return lsp_type
+
+        # If LSP type is more specific, prefer it
+        # (e.g., current_type="int" but LSP says "Literal[0, 1]")
+        if "[" in lsp_type and "[" not in current_type:
+            return lsp_type
+
+        return current_type
 
     def _extract_type_from_hover(self, hover: str) -> Optional[str]:
         """Extract type annotation from hover text.
