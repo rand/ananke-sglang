@@ -258,6 +258,7 @@ class BeamSearch(Generic[S]):
         self.token_scorer = token_scorer
         self.constraint_scorer = constraint_scorer
         self.stats = BeamSearchStats()
+        self._last_all_candidates: List[BeamCandidate[S]] = []  # Track all candidates from last search
 
     def search(
         self,
@@ -369,8 +370,12 @@ class BeamSearch(Generic[S]):
         if not all_candidates:
             # Fallback to initial
             result = initial
+            all_candidates = [initial]
         else:
             result = min(all_candidates, key=lambda c: c.score)
+
+        # Store all candidates for multi-result access
+        self._last_all_candidates = sorted(all_candidates, key=lambda c: c.score)
 
         # Update stats
         self.stats.finished_beams = len(finished)
@@ -481,14 +486,24 @@ class BeamSearch(Generic[S]):
             self.constraint_scorer = ConstraintWrapper(constraint_fn)  # type: ignore
 
         # Run search
-        result = self.search(start_tokens, initial_state, end_token)
+        self.search(start_tokens, initial_state, end_token)
 
-        # Return all finished candidates
-        return [result]  # TODO: Return full beam for multi-result
+        # Return all candidates sorted by score (best first)
+        return self._last_all_candidates[:self.config.beam_width]
 
     def get_stats(self) -> BeamSearchStats:
         """Get search statistics."""
         return self.stats
+
+    def get_all_candidates(self) -> List[BeamCandidate[S]]:
+        """Get all candidates from the last search.
+
+        Returns candidates sorted by score (best first).
+
+        Returns:
+            List of all candidates from last search
+        """
+        return self._last_all_candidates.copy()
 
 
 class SimpleTokenScorer:

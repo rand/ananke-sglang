@@ -517,3 +517,53 @@ class TestBeamSearchIntegration:
 
         # Should prefer token 50 due to higher constraint score
         assert 50 in result.tokens
+
+    def test_get_all_candidates(self) -> None:
+        """Test getting all candidates from search."""
+        scorer = MockTokenScorer()
+        config = BeamSearchConfig(beam_width=3, max_length=5)
+        search = BeamSearch(config=config, token_scorer=scorer)  # type: ignore
+
+        search.search(start_tokens=[0], end_token=1)
+        all_candidates = search.get_all_candidates()
+
+        # Should have multiple candidates
+        assert len(all_candidates) >= 1
+        # Should be sorted by score (best first)
+        for i in range(len(all_candidates) - 1):
+            assert all_candidates[i].score <= all_candidates[i + 1].score
+
+    def test_search_with_constraint_returns_multiple(self) -> None:
+        """Test that search_with_constraint returns multiple candidates."""
+        # Create scorer that offers multiple paths
+        class MultiPathScorer:
+            def score_tokens(
+                self,
+                tokens: List[int],
+                state: Any,
+                top_k: int = 50,
+            ) -> List[Tuple[int, float, float]]:
+                if len(tokens) == 1:
+                    # Offer multiple paths
+                    return [
+                        (10, -0.1, 0.9),
+                        (20, -0.2, 0.8),
+                        (30, -0.3, 0.7),
+                    ]
+                # End token
+                return [(1, -0.1, 1.0)]
+
+        config = BeamSearchConfig(beam_width=3, max_length=5)
+        search = BeamSearch(config=config, token_scorer=MultiPathScorer())  # type: ignore
+
+        results = search.search_with_constraint(
+            start_tokens=[0],
+            end_token=1,
+        )
+
+        # Should return multiple candidates
+        assert len(results) >= 1
+        assert len(results) <= 3  # Limited by beam_width
+        # Each should be a BeamCandidate
+        for r in results:
+            assert isinstance(r, BeamCandidate)

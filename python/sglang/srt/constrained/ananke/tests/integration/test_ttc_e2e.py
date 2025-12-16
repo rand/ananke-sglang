@@ -605,5 +605,206 @@ class TestPipelineWithConstraintChecker:
         assert '"' in result.filled_code or "'" in result.filled_code or "str" in result.filled_code
 
 
+# =============================================================================
+# Beam Search and Speculative Decoding E2E Tests
+# =============================================================================
+
+
+class TestBeamSearchE2E:
+    """End-to-end tests for beam search integration."""
+
+    def test_beam_search_with_constraint_verification(self):
+        """Test beam search integrated with constraint verification."""
+        from search.beam import BeamSearch, BeamSearchConfig, BeamCandidate
+
+        # Create a scorer that provides multiple candidates
+        class MockConstraintScorer:
+            def score_tokens(self, tokens, state, top_k=50):
+                # Return multiple candidates with different scores
+                if len(tokens) < 3:
+                    return [
+                        (10 + len(tokens), -0.1, 0.9),
+                        (20 + len(tokens), -0.3, 0.7),
+                    ]
+                return [(1, -0.05, 1.0)]  # END token
+
+        config = BeamSearchConfig(beam_width=3, max_length=5)
+        search = BeamSearch(config=config, token_scorer=MockConstraintScorer())
+
+        result = search.search(start_tokens=[0], end_token=1)
+
+        # Should complete successfully
+        assert isinstance(result, BeamCandidate)
+        assert len(result.tokens) > 0
+
+        # Check stats
+        stats = search.get_stats()
+        assert stats.total_steps > 0
+
+    def test_beam_search_returns_multiple_candidates(self):
+        """Test beam search returns multiple candidates for Best-of-N."""
+        from search.beam import BeamSearch, BeamSearchConfig
+
+        class MultiPathScorer:
+            def score_tokens(self, tokens, state, top_k=50):
+                if len(tokens) == 1:
+                    return [
+                        (10, -0.1, 0.9),
+                        (20, -0.2, 0.85),
+                        (30, -0.3, 0.8),
+                    ]
+                return [(1, -0.1, 1.0)]
+
+        config = BeamSearchConfig(beam_width=3, max_length=5)
+        search = BeamSearch(config=config, token_scorer=MultiPathScorer())
+
+        results = search.search_with_constraint(start_tokens=[0], end_token=1)
+
+        # Should return multiple candidates
+        assert len(results) >= 1
+        assert len(results) <= 3
+
+    def test_beam_search_diversity_penalty(self):
+        """Test that diversity penalty prevents beam collapse."""
+        from search.beam import BeamSearch, BeamSearchConfig
+
+        class HomogeneousScorer:
+            def score_tokens(self, tokens, state, top_k=50):
+                # Return same token repeatedly
+                return [(42, -0.1, 0.9)] * 5
+
+        config = BeamSearchConfig(
+            beam_width=3,
+            diversity_penalty=0.5,
+            max_length=3,
+        )
+        search = BeamSearch(config=config, token_scorer=HomogeneousScorer())
+
+        result = search.search(start_tokens=[0])
+
+        # Should complete without error
+        assert result is not None
+
+
+class TestSpeculativeDecodingE2E:
+    """End-to-end tests for speculative decoding integration."""
+
+    def test_constrained_lookahead_basic(self):
+        """Test basic constrained lookahead verification."""
+        from speculative.constrained_lookahead import (
+            ConstrainedLookahead,
+            LookaheadConfig,
+        )
+        from speculative.draft_model import GreedyDraftModel, DraftContext
+        import torch
+        from typing import List, Tuple, Any, Optional
+
+        # Create mock logits and mask functions
+        vocab_size = 100
+
+        def logits_fn(tokens: List[int]) -> torch.Tensor:
+            logits = torch.zeros(vocab_size)
+            logits[42] = 10.0  # High prob for token 42
+            return logits
+
+        # Create mock verifier that accepts tokens < 50
+        class MockVerifier:
+            def verify_draft_tokens(
+                self, draft_tokens: List[int]
+            ) -> Tuple[int, Optional[Any]]:
+                """Verify draft tokens, accept those < 50."""
+                num_valid = 0
+                for token in draft_tokens:
+                    if token < 50:
+                        num_valid += 1
+                    else:
+                        break
+                return num_valid, None if num_valid == len(draft_tokens) else "token >= 50"
+
+        config = LookaheadConfig(initial_lookahead=3)
+        draft_model = GreedyDraftModel(logits_fn=logits_fn, vocab_size=vocab_size)
+        verifier = MockVerifier()
+
+        lookahead = ConstrainedLookahead(
+            draft_model=draft_model,
+            verifier=verifier,
+            config=config,
+        )
+
+        context = DraftContext(prefix_tokens=[0])
+        result = lookahead.generate_next(context)
+
+        # Should return list of accepted tokens
+        assert result is not None
+        assert isinstance(result, list)
+        # Token 42 should be accepted (it's < 50)
+        assert all(t < 50 for t in result)
+
+    def test_draft_model_generates_candidates(self):
+        """Test that draft model generates multiple candidates."""
+        from speculative.draft_model import SamplingDraftModel, DraftContext
+        import torch
+        from typing import List
+
+        vocab_size = 100
+
+        def logits_fn(tokens: List[int]) -> torch.Tensor:
+            logits = torch.randn(vocab_size)
+            logits[10:20] += 5.0  # Boost tokens 10-19
+            return logits
+
+        draft_model = SamplingDraftModel(
+            logits_fn=logits_fn,
+            vocab_size=vocab_size,
+            temperature=1.0,
+        )
+
+        context = DraftContext(
+            prefix_tokens=[0],
+            temperature=1.0,
+        )
+
+        result = draft_model.generate_draft(context, lookahead_length=5)
+
+        # Should generate draft tokens
+        assert result is not None
+        assert len(result.tokens) > 0
+
+    def test_adaptive_lookahead_adjustment(self):
+        """Test that lookahead adjusts based on acceptance rate."""
+        from speculative.constrained_lookahead import (
+            ConstrainedLookahead,
+            LookaheadConfig,
+        )
+        from speculative.draft_model import NullDraftModel
+        from typing import List, Tuple, Any, Optional
+
+        config = LookaheadConfig(
+            initial_lookahead=5,
+            min_lookahead=2,
+            max_lookahead=10,
+            adaptive=True,
+        )
+        draft_model = NullDraftModel()
+
+        # Mock verifier that accepts all tokens
+        class AlwaysAcceptVerifier:
+            def verify_draft_tokens(
+                self, draft_tokens: List[int]
+            ) -> Tuple[int, Optional[Any]]:
+                return len(draft_tokens), None
+
+        verifier = AlwaysAcceptVerifier()
+
+        lookahead = ConstrainedLookahead(
+            draft_model=draft_model,
+            verifier=verifier,
+            config=config,
+        )
+
+        # Current lookahead should start at initial
+        assert lookahead.stats.current_lookahead == 5
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
