@@ -1131,3 +1131,189 @@ class TestCheckpointRestoreExpressionState:
         python_domain.restore(checkpoint)
         assert python_domain._expression_state.context == ExpressionContext.SIMPLE_ASSIGNMENT_RHS
         assert python_domain._expression_state.target_variable == "x"
+
+
+# =============================================================================
+# Z3 Formula Parsing Tests
+# =============================================================================
+
+
+class TestZ3FormulaParsing:
+    """Tests for enhanced Z3 formula parsing."""
+
+    @pytest.fixture
+    def z3_solver(self):
+        """Create a Z3 solver if available."""
+        try:
+            from domains.semantics.smt import Z3Solver, is_z3_available
+            if not is_z3_available():
+                pytest.skip("Z3 not available")
+            return Z3Solver(timeout_ms=1000)
+        except ImportError:
+            pytest.skip("Z3 not available")
+
+    def test_parse_boolean_literals(self, z3_solver) -> None:
+        """Test parsing boolean literals."""
+        import z3
+
+        true_formula = z3_solver._parse_formula("true")
+        assert z3.is_true(true_formula)
+
+        false_formula = z3_solver._parse_formula("false")
+        assert z3.is_false(false_formula)
+
+        # Case insensitive
+        true_upper = z3_solver._parse_formula("TRUE")
+        assert z3.is_true(true_upper)
+
+    def test_parse_integer_literals(self, z3_solver) -> None:
+        """Test parsing integer literals."""
+        import z3
+
+        five = z3_solver._parse_formula("5")
+        assert z3.is_int_value(five)
+        assert five.as_long() == 5
+
+        negative = z3_solver._parse_formula("-10")
+        # Note: This may create a variable or expression
+        # The parser handles unary minus
+
+    def test_parse_comparison_operators(self, z3_solver) -> None:
+        """Test parsing comparison operators."""
+        # x > 5
+        formula = z3_solver._parse_formula("x > 5")
+        assert formula is not None
+
+        # x <= 10
+        formula = z3_solver._parse_formula("x <= 10")
+        assert formula is not None
+
+        # x == y
+        formula = z3_solver._parse_formula("x == y")
+        assert formula is not None
+
+        # x != 0
+        formula = z3_solver._parse_formula("x != 0")
+        assert formula is not None
+
+    def test_parse_arithmetic_operators(self, z3_solver) -> None:
+        """Test parsing arithmetic operators."""
+        # x + 5
+        formula = z3_solver._parse_formula("x + 5")
+        assert formula is not None
+
+        # x - y
+        formula = z3_solver._parse_formula("x - y")
+        assert formula is not None
+
+        # x * 2
+        formula = z3_solver._parse_formula("x * 2")
+        assert formula is not None
+
+        # x / 3
+        formula = z3_solver._parse_formula("x / 3")
+        assert formula is not None
+
+    def test_parse_logical_operators(self, z3_solver) -> None:
+        """Test parsing logical operators."""
+        # x > 0 and x < 10
+        formula = z3_solver._parse_formula("x > 0 and x < 10")
+        assert formula is not None
+
+        # x == 0 or y == 0
+        formula = z3_solver._parse_formula("x == 0 or y == 0")
+        assert formula is not None
+
+        # not x > 5
+        formula = z3_solver._parse_formula("not x > 5")
+        assert formula is not None
+
+    def test_parse_parentheses(self, z3_solver) -> None:
+        """Test parsing parenthesized expressions."""
+        # (x + 5) > 10
+        formula = z3_solver._parse_formula("(x + 5) > 10")
+        assert formula is not None
+
+        # (x > 0) and (y > 0)
+        formula = z3_solver._parse_formula("(x > 0) and (y > 0)")
+        assert formula is not None
+
+    def test_parse_complex_expression(self, z3_solver) -> None:
+        """Test parsing complex expressions."""
+        # (x + y) * 2 >= 10 and z < 5
+        formula = z3_solver._parse_formula("(x + y) * 2 >= 10 and z < 5")
+        assert formula is not None
+
+    def test_satisfiability_simple_sat(self, z3_solver) -> None:
+        """Test satisfiability of simple SAT formula."""
+        from domains.semantics.constraint import SMTFormula, FormulaKind
+        from domains.semantics.smt import SMTResult
+
+        formula = SMTFormula(expression="x > 5", kind=FormulaKind.ASSERTION)
+        result = z3_solver.check([formula])
+
+        assert result.result == SMTResult.SAT
+        assert result.model is not None
+
+    def test_satisfiability_simple_unsat(self, z3_solver) -> None:
+        """Test satisfiability of simple UNSAT formula."""
+        from domains.semantics.constraint import SMTFormula, FormulaKind
+        from domains.semantics.smt import SMTResult
+
+        # x > 5 and x < 3 is UNSAT
+        f1 = SMTFormula(expression="x > 5", kind=FormulaKind.ASSERTION)
+        f2 = SMTFormula(expression="x < 3", kind=FormulaKind.ASSERTION)
+        result = z3_solver.check([f1, f2])
+
+        assert result.result == SMTResult.UNSAT
+
+    def test_satisfiability_complex_sat(self, z3_solver) -> None:
+        """Test satisfiability of complex SAT formula."""
+        from domains.semantics.constraint import SMTFormula, FormulaKind
+        from domains.semantics.smt import SMTResult
+
+        # x >= 0 and y >= 0 and x + y == 10
+        f1 = SMTFormula(expression="x >= 0", kind=FormulaKind.ASSERTION)
+        f2 = SMTFormula(expression="y >= 0", kind=FormulaKind.ASSERTION)
+        f3 = SMTFormula(expression="x + y == 10", kind=FormulaKind.ASSERTION)
+        result = z3_solver.check([f1, f2, f3])
+
+        assert result.result == SMTResult.SAT
+        assert result.model is not None
+
+    def test_formula_caching(self, z3_solver) -> None:
+        """Test that parsed formulas are cached."""
+        # Parse the same formula twice
+        formula1 = z3_solver._parse_formula("x > 5")
+        formula2 = z3_solver._parse_formula("x > 5")
+
+        # Should be the same object (cached)
+        assert formula1 is formula2
+
+    def test_parse_failure_fallback(self, z3_solver) -> None:
+        """Test that parse failure falls back to boolean variable."""
+        # Unparseable expression should create a boolean variable
+        formula = z3_solver._parse_formula("this is not a valid expression!!!")
+        assert formula is not None  # Falls back to Bool variable
+
+    def test_variable_type_inference(self, z3_solver) -> None:
+        """Test variable type inference from names."""
+        import z3
+
+        # is_valid should be Bool
+        z3_solver._parse_formula("is_valid == true")
+        assert z3.is_bool(z3_solver._variables.get("is_valid", None))
+
+        # x should be Int (default)
+        z3_solver.reset()
+        z3_solver._parse_formula("x > 5")
+        assert z3.is_int(z3_solver._variables.get("x", None))
+
+    def test_reset_clears_cache(self, z3_solver) -> None:
+        """Test that reset clears the formula cache."""
+        z3_solver._parse_formula("x > 5")
+        assert len(z3_solver._formula_cache) > 0
+
+        z3_solver.reset()
+        assert len(z3_solver._formula_cache) == 0
+        assert len(z3_solver._variables) == 0

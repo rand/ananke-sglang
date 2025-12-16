@@ -41,12 +41,14 @@ try:
         HoleType,
         ListType,
         NeverType,
+        ProtocolType,
         SetType,
         TupleType,
         Type,
         TypeEquation,
         TypeVar,
         UnionType,
+        Variance,
     )
 except ImportError:
     from domains.types.constraint import (
@@ -59,12 +61,14 @@ except ImportError:
         HoleType,
         ListType,
         NeverType,
+        ProtocolType,
         SetType,
         TupleType,
         Type,
         TypeEquation,
         TypeVar,
         UnionType,
+        Variance,
     )
 
 
@@ -193,6 +197,9 @@ def occurs_check(var: TypeVar, ty: Type) -> bool:
     if isinstance(ty, ClassType):
         return any(occurs_check(var, arg) for arg in ty.type_args)
 
+    if isinstance(ty, ProtocolType):
+        return any(occurs_check(var, member_ty) for _, member_ty in ty.members)
+
     # Primitive types and other base types don't contain variables
     return False
 
@@ -255,10 +262,208 @@ class UnificationResult:
         return f"UnificationResult.failure({self.error})"
 
 
+def is_subtype(sub: Type, sup: Type) -> bool:
+    """Check if sub is a subtype of sup (sub <: sup).
+
+    This implements subtype checking with proper variance handling.
+    Uses a permissive approach - defaults to True on uncertainty.
+
+    Args:
+        sub: The potential subtype
+        sup: The potential supertype
+
+    Returns:
+        True if sub is a subtype of sup
+    """
+    # Same type
+    if sub == sup:
+        return True
+
+    # Any is both top and wildcard
+    if isinstance(sup, AnyType) or isinstance(sub, AnyType):
+        return True
+
+    # Never is bottom type - subtype of everything
+    if isinstance(sub, NeverType):
+        return True
+
+    # HoleType acts as wildcard
+    if isinstance(sub, HoleType) or isinstance(sup, HoleType):
+        return True
+
+    # TypeVar - requires unification context, be permissive
+    if isinstance(sub, TypeVar) or isinstance(sup, TypeVar):
+        return True
+
+    # int <: float (numeric promotion)
+    from .constraint import INT, FLOAT
+    if sub == INT and sup == FLOAT:
+        return True
+
+    # Union subtyping: sub <: Union if sub <: any member
+    if isinstance(sup, UnionType):
+        return any(is_subtype(sub, member) for member in sup.members)
+
+    # Union subtyping: Union <: sup if all members <: sup
+    if isinstance(sub, UnionType):
+        return all(is_subtype(member, sup) for member in sub.members)
+
+    # List covariance: List[T] <: List[U] if T <: U
+    if isinstance(sub, ListType) and isinstance(sup, ListType):
+        return is_subtype(sub.element, sup.element)
+
+    # Set covariance (read-only)
+    if isinstance(sub, SetType) and isinstance(sup, SetType):
+        return is_subtype(sub.element, sup.element)
+
+    # Dict covariance in value (when read-only)
+    if isinstance(sub, DictType) and isinstance(sup, DictType):
+        return is_subtype(sub.key, sup.key) and is_subtype(sub.value, sup.value)
+
+    # Tuple covariance
+    if isinstance(sub, TupleType) and isinstance(sup, TupleType):
+        if len(sub.elements) != len(sup.elements):
+            return False
+        return all(is_subtype(s, u) for s, u in zip(sub.elements, sup.elements))
+
+    # Function contravariant params, covariant return
+    if isinstance(sub, FunctionType) and isinstance(sup, FunctionType):
+        if len(sub.params) != len(sup.params):
+            return False
+        # Contravariant: sup_param <: sub_param
+        params_ok = all(
+            is_subtype(sup_p, sub_p)
+            for sub_p, sup_p in zip(sub.params, sup.params)
+        )
+        # Covariant: sub_ret <: sup_ret
+        return_ok = is_subtype(sub.returns, sup.returns)
+        return params_ok and return_ok
+
+    # Class nominal subtyping (same name)
+    if isinstance(sub, ClassType) and isinstance(sup, ClassType):
+        if sub.name != sup.name:
+            return False
+        if len(sub.type_args) != len(sup.type_args):
+            return False
+        # Default to invariant for generic args
+        return all(a1 == a2 for a1, a2 in zip(sub.type_args, sup.type_args))
+
+    # Protocol structural subtyping
+    if isinstance(sup, ProtocolType):
+        return _satisfies_protocol(sub, sup)
+
+    # Default: not a subtype (conservative)
+    return False
+
+
+def _satisfies_protocol(ty: Type, protocol: ProtocolType) -> bool:
+    """Check if a type satisfies a protocol's structural requirements.
+
+    A type satisfies a protocol if it has all the required members
+    with compatible types (structural subtyping / duck typing).
+
+    Args:
+        ty: The type to check
+        protocol: The protocol to check against
+
+    Returns:
+        True if ty satisfies the protocol
+    """
+    # Any and Hole satisfy all protocols
+    if isinstance(ty, (AnyType, HoleType)):
+        return True
+
+    # TypeVar - be permissive (would need bounds for precision)
+    if isinstance(ty, TypeVar):
+        return True
+
+    # Protocols satisfy protocols if they have all required members
+    if isinstance(ty, ProtocolType):
+        ty_members = dict(ty.members)
+        for name, expected_type in protocol.members:
+            if name not in ty_members:
+                return False
+            # Check member type compatibility (covariant for methods/properties)
+            if not is_subtype(ty_members[name], expected_type):
+                return False
+        return True
+
+    # ClassType satisfies protocol if it has all members
+    # (In practice, would need class member info; be permissive)
+    if isinstance(ty, ClassType):
+        # Without member info, be permissive - assume it might satisfy
+        return True
+
+    # FunctionType can satisfy single-method protocols (callable)
+    if isinstance(ty, FunctionType):
+        # Check for __call__ protocol
+        call_type = protocol.get_member("__call__")
+        if call_type is not None and len(protocol.members) == 1:
+            return is_subtype(ty, call_type)
+
+    # Default: doesn't satisfy
+    return False
+
+
+def unify_with_variance(
+    t1: Type,
+    t2: Type,
+    variance: Variance = Variance.INVARIANT,
+) -> UnificationResult:
+    """Unify two types with variance handling.
+
+    Variance affects whether we accept subtypes in certain positions:
+    - COVARIANT: t1 <: t2 is acceptable (output position)
+    - CONTRAVARIANT: t2 <: t1 is acceptable (input position)
+    - INVARIANT: exact match required
+    - BIVARIANT: either direction acceptable
+
+    We still perform unification to resolve type variables, but variance
+    determines which type mismatches are acceptable.
+
+    Args:
+        t1: First type (actual)
+        t2: Second type (expected)
+        variance: The variance of this position
+
+    Returns:
+        UnificationResult
+    """
+    # Always try unification first to resolve type variables
+    result = unify(t1, t2)
+    if result.is_success:
+        return result
+
+    # For invariant, require exact unification (already failed)
+    if variance == Variance.INVARIANT:
+        return result
+
+    # For covariant, t1 must be subtype of t2
+    if variance == Variance.COVARIANT:
+        if is_subtype(t1, t2):
+            return UnificationResult.success(EMPTY_SUBSTITUTION)
+        return result
+
+    # For contravariant, t2 must be subtype of t1
+    if variance == Variance.CONTRAVARIANT:
+        if is_subtype(t2, t1):
+            return UnificationResult.success(EMPTY_SUBSTITUTION)
+        return result
+
+    # Bivariant - accept if either direction works
+    if variance == Variance.BIVARIANT:
+        if is_subtype(t1, t2) or is_subtype(t2, t1):
+            return UnificationResult.success(EMPTY_SUBSTITUTION)
+        return result
+
+    return result
+
+
 def unify(t1: Type, t2: Type) -> UnificationResult:
     """Unify two types, finding a substitution that makes them equal.
 
-    This is Robinson's unification algorithm with occurs check.
+    This is Robinson's unification algorithm with occurs check,
+    extended with variance handling for function types.
 
     Args:
         t1: First type
@@ -305,7 +510,7 @@ def unify(t1: Type, t2: Type) -> UnificationResult:
             )
         return UnificationResult.success(Substitution({t2.name: t1}))
 
-    # Function types - unify params and return
+    # Function types - unify with proper variance
     if isinstance(t1, FunctionType) and isinstance(t2, FunctionType):
         if len(t1.params) != len(t2.params):
             return UnificationResult.failure(
@@ -316,19 +521,23 @@ def unify(t1: Type, t2: Type) -> UnificationResult:
 
         result_subst = EMPTY_SUBSTITUTION
 
-        # Unify parameters (contravariant, but we use invariant for simplicity)
+        # Unify parameters with contravariance
         for p1, p2 in zip(t1.params, t2.params):
             p1_subst = result_subst.apply(p1)
             p2_subst = result_subst.apply(p2)
-            param_result = unify(p1_subst, p2_subst)
+            # Contravariant: swap order for subtype check
+            param_result = unify_with_variance(p2_subst, p1_subst, Variance.CONTRAVARIANT)
             if param_result.is_failure:
-                return param_result
+                # Fall back to invariant unification
+                param_result = unify(p1_subst, p2_subst)
+                if param_result.is_failure:
+                    return param_result
             result_subst = param_result.substitution.compose(result_subst)
 
-        # Unify return types (covariant, but we use invariant)
+        # Unify return types with covariance
         ret1_subst = result_subst.apply(t1.returns)
         ret2_subst = result_subst.apply(t2.returns)
-        ret_result = unify(ret1_subst, ret2_subst)
+        ret_result = unify_with_variance(ret1_subst, ret2_subst, Variance.COVARIANT)
         if ret_result.is_failure:
             return ret_result
 
@@ -399,6 +608,45 @@ def unify(t1: Type, t2: Type) -> UnificationResult:
             result_subst = arg_result.substitution.compose(result_subst)
 
         return UnificationResult.success(result_subst)
+
+    # Protocol types - structural subtyping
+    if isinstance(t1, ProtocolType) and isinstance(t2, ProtocolType):
+        # Both protocols: unify member-by-member
+        t1_members = dict(t1.members)
+        t2_members = dict(t2.members)
+
+        result_subst = EMPTY_SUBSTITUTION
+
+        # Check all members in t2 exist in t1 with compatible types
+        for name, ty2 in t2_members.items():
+            if name not in t1_members:
+                return UnificationResult.failure(
+                    t1, t2, f"protocol missing member: {name}"
+                )
+            ty1 = t1_members[name]
+            ty1_subst = result_subst.apply(ty1)
+            ty2_subst = result_subst.apply(ty2)
+            member_result = unify(ty1_subst, ty2_subst)
+            if member_result.is_failure:
+                return member_result
+            result_subst = member_result.substitution.compose(result_subst)
+
+        return UnificationResult.success(result_subst)
+
+    # Protocol against other types - use structural subtype check
+    if isinstance(t2, ProtocolType):
+        if _satisfies_protocol(t1, t2):
+            return UnificationResult.success(EMPTY_SUBSTITUTION)
+        return UnificationResult.failure(
+            t1, t2, f"type does not satisfy protocol {t2.name}"
+        )
+
+    if isinstance(t1, ProtocolType):
+        if _satisfies_protocol(t2, t1):
+            return UnificationResult.success(EMPTY_SUBSTITUTION)
+        return UnificationResult.failure(
+            t1, t2, f"type does not satisfy protocol {t1.name}"
+        )
 
     # Union types - more complex, require structural matching
     # For now, unions only unify if they have the same members

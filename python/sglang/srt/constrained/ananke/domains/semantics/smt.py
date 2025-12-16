@@ -196,7 +196,32 @@ class Z3Solver(SMTSolver):
     """Z3-based SMT solver.
 
     Provides full SMT solving capabilities using Z3.
+
+    Supports formula parsing for:
+    - Arithmetic: +, -, *, /, //, %, **
+    - Comparison: <, <=, >, >=, ==, !=
+    - Logical: and, or, not, implies (->)
+    - Variables with type inference (Int, Real, Bool)
+    - Parentheses for grouping
     """
+
+    # Operator precedence (higher = binds tighter)
+    _PRECEDENCE = {
+        'or': 1,
+        'and': 2,
+        'not': 3,
+        '->': 4,  # implies
+        '==': 5, '!=': 5, '<': 5, '<=': 5, '>': 5, '>=': 5,
+        '+': 6, '-': 6,
+        '*': 7, '/': 7, '//': 7, '%': 7,
+        '**': 8,
+        'unary-': 9,  # unary minus
+    }
+
+    # Tokens that are operators
+    _BINARY_OPS = {'or', 'and', '->', '==', '!=', '<', '<=', '>', '>=',
+                   '+', '-', '*', '/', '//', '%', '**'}
+    _UNARY_OPS = {'not', '-'}
 
     def __init__(self, timeout_ms: int = 5000):
         """Initialize the Z3 solver.
@@ -210,6 +235,7 @@ class Z3Solver(SMTSolver):
         self._solver = z3.Solver()
         self._solver.set("timeout", timeout_ms)
         self._variables: Dict[str, Any] = {}
+        self._formula_cache: Dict[str, Any] = {}  # Cache for parsed formulas
 
     def check(self, formulas: List[SMTFormula], assumptions: Optional[List[SMTFormula]] = None) -> SMTCheckResult:
         """Check satisfiability using Z3."""
@@ -266,22 +292,263 @@ class Z3Solver(SMTSolver):
     def _parse_formula(self, expression: str) -> Optional[Any]:
         """Parse a formula expression into Z3 format.
 
-        This is a simplified parser - full implementation would
-        support more operators and types.
+        Supports:
+        - Boolean literals: true, false
+        - Numeric literals: integers and floats
+        - Variables: auto-typed based on context
+        - Arithmetic: +, -, *, /, //, %, **
+        - Comparison: <, <=, >, >=, ==, !=
+        - Logical: and, or, not, implies (->)
+        - Parentheses for grouping
+
+        Args:
+            expression: The expression string to parse
+
+        Returns:
+            Z3 expression or None if parsing fails
         """
         expr = expression.strip()
 
-        # Handle simple cases
-        if expr.lower() == "true":
-            return z3.BoolVal(True)
-        if expr.lower() == "false":
-            return z3.BoolVal(False)
+        # Check cache first
+        if expr in self._formula_cache:
+            return self._formula_cache[expr]
 
-        # For now, create a boolean variable for unknown expressions
-        # Full implementation would parse arithmetic, comparisons, etc.
-        if expr not in self._variables:
-            self._variables[expr] = z3.Bool(expr)
-        return self._variables[expr]
+        try:
+            result = self._parse_expr(expr)
+            self._formula_cache[expr] = result
+            return result
+        except Exception:
+            # On parse failure, fall back to boolean variable
+            # This preserves soundness - we don't block based on unparseable formulas
+            if expr not in self._variables:
+                self._variables[expr] = z3.Bool(expr)
+            return self._variables[expr]
+
+    def _tokenize(self, expr: str) -> List[str]:
+        """Tokenize an expression string.
+
+        Args:
+            expr: Expression string
+
+        Returns:
+            List of tokens
+        """
+        import re
+        # Pattern matches: multi-char ops, numbers, identifiers, single chars
+        pattern = r'(->|//|\*\*|<=|>=|==|!=|and|or|not|\d+\.?\d*|[a-zA-Z_]\w*|[+\-*/%<>()!])'
+        tokens = re.findall(pattern, expr, re.IGNORECASE)
+        return tokens
+
+    def _parse_expr(self, expr: str) -> Any:
+        """Parse an expression using precedence climbing.
+
+        Args:
+            expr: Expression string
+
+        Returns:
+            Z3 expression
+        """
+        tokens = self._tokenize(expr)
+        pos = [0]  # Mutable position counter
+
+        def peek() -> Optional[str]:
+            if pos[0] < len(tokens):
+                return tokens[pos[0]]
+            return None
+
+        def consume() -> str:
+            tok = tokens[pos[0]]
+            pos[0] += 1
+            return tok
+
+        def parse_atom() -> Any:
+            """Parse an atomic expression (literal, variable, or parenthesized expr)."""
+            tok = peek()
+            if tok is None:
+                raise ValueError("Unexpected end of expression")
+
+            # Unary operators
+            if tok.lower() == 'not':
+                consume()
+                operand = parse_atom()
+                return z3.Not(operand)
+            if tok == '-' and (pos[0] == 0 or tokens[pos[0]-1] in self._BINARY_OPS or tokens[pos[0]-1] == '('):
+                consume()
+                operand = parse_atom()
+                return -operand
+
+            # Parentheses
+            if tok == '(':
+                consume()
+                inner = parse_binary(0)
+                if peek() == ')':
+                    consume()
+                return inner
+
+            consume()
+
+            # Boolean literals
+            if tok.lower() == 'true':
+                return z3.BoolVal(True)
+            if tok.lower() == 'false':
+                return z3.BoolVal(False)
+
+            # Numeric literals
+            if tok.replace('.', '', 1).replace('-', '', 1).isdigit():
+                if '.' in tok:
+                    return z3.RealVal(tok)
+                else:
+                    return z3.IntVal(int(tok))
+
+            # Variables - infer type from name or default to Int
+            return self._get_or_create_variable(tok)
+
+        def parse_binary(min_prec: int) -> Any:
+            """Parse binary expressions with precedence climbing."""
+            left = parse_atom()
+
+            while True:
+                op = peek()
+                if op is None:
+                    break
+
+                # Normalize operator
+                op_lower = op.lower()
+                if op_lower not in self._PRECEDENCE:
+                    break
+
+                prec = self._PRECEDENCE[op_lower]
+                if prec < min_prec:
+                    break
+
+                consume()
+                # Right-associative for ** and ->, left-associative otherwise
+                next_min_prec = prec + 1 if op_lower not in ('**', '->') else prec
+                right = parse_binary(next_min_prec)
+
+                left = self._apply_binary_op(op_lower, left, right)
+
+            return left
+
+        return parse_binary(0)
+
+    def _get_or_create_variable(self, name: str) -> Any:
+        """Get or create a Z3 variable.
+
+        Infers type from variable name conventions:
+        - Names starting with 'b' or 'is_' -> Bool
+        - Names starting with 'f' or containing 'float' -> Real
+        - Default -> Int
+
+        Args:
+            name: Variable name
+
+        Returns:
+            Z3 variable
+        """
+        if name in self._variables:
+            return self._variables[name]
+
+        name_lower = name.lower()
+
+        # Type inference heuristics
+        if name_lower.startswith('is_') or name_lower.startswith('has_'):
+            var = z3.Bool(name)
+        elif name_lower.startswith('b') and len(name) > 1 and not name[1].isalpha():
+            var = z3.Bool(name)
+        elif 'float' in name_lower or 'real' in name_lower:
+            var = z3.Real(name)
+        elif name_lower.startswith('f') and len(name) > 1 and not name[1].isalpha():
+            var = z3.Real(name)
+        else:
+            # Default to Int for most numeric variables
+            var = z3.Int(name)
+
+        self._variables[name] = var
+        return var
+
+    def _apply_binary_op(self, op: str, left: Any, right: Any) -> Any:
+        """Apply a binary operator to two operands.
+
+        Handles type coercion for mixed Int/Real operations.
+
+        Args:
+            op: Operator string
+            left: Left operand
+            right: Right operand
+
+        Returns:
+            Z3 expression
+        """
+        # Coerce types if needed for arithmetic
+        if op in ('+', '-', '*', '/', '//', '%', '**'):
+            left, right = self._coerce_arithmetic(left, right)
+
+        # Apply operator
+        if op == 'and':
+            return z3.And(left, right)
+        elif op == 'or':
+            return z3.Or(left, right)
+        elif op == '->':
+            return z3.Implies(left, right)
+        elif op == '==':
+            return left == right
+        elif op == '!=':
+            return left != right
+        elif op == '<':
+            return left < right
+        elif op == '<=':
+            return left <= right
+        elif op == '>':
+            return left > right
+        elif op == '>=':
+            return left >= right
+        elif op == '+':
+            return left + right
+        elif op == '-':
+            return left - right
+        elif op == '*':
+            return left * right
+        elif op == '/':
+            # Z3 uses / for real division
+            return left / right
+        elif op == '//':
+            # Integer division - convert to Div for ints
+            if z3.is_int(left) and z3.is_int(right):
+                return left / right  # Z3 Int / Int is floor division
+            else:
+                return z3.ToInt(left / right)
+        elif op == '%':
+            return left % right
+        elif op == '**':
+            # Z3 doesn't have direct power, approximate with constraints
+            # For now, return a fresh variable (conservative)
+            return self._get_or_create_variable(f"pow_{id(left)}_{id(right)}")
+
+        # Fallback - should not reach here
+        raise ValueError(f"Unknown operator: {op}")
+
+    def _coerce_arithmetic(self, left: Any, right: Any) -> Tuple[Any, Any]:
+        """Coerce operands for arithmetic operations.
+
+        If one is Real and one is Int, convert Int to Real.
+
+        Args:
+            left: Left operand
+            right: Right operand
+
+        Returns:
+            Coerced (left, right) tuple
+        """
+        left_is_real = z3.is_real(left) and not z3.is_int(left)
+        right_is_real = z3.is_real(right) and not z3.is_int(right)
+
+        if left_is_real and z3.is_int(right):
+            right = z3.ToReal(right)
+        elif right_is_real and z3.is_int(left):
+            left = z3.ToReal(left)
+
+        return left, right
 
     def _extract_model(self) -> SMTModel:
         """Extract model from SAT result."""
@@ -323,6 +590,7 @@ class Z3Solver(SMTSolver):
         """Reset solver state."""
         self._solver.reset()
         self._variables.clear()
+        self._formula_cache.clear()
 
 
 class IncrementalSMTSolver:

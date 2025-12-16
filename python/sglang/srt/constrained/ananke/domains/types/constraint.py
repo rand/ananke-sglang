@@ -29,7 +29,36 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Dict, FrozenSet, List, Optional, Tuple, Union
+from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple, Union
+
+
+# =============================================================================
+# Variance
+# =============================================================================
+
+
+class Variance(Enum):
+    """Variance of a type parameter.
+
+    Variance describes how subtyping of a generic type relates to
+    subtyping of its type arguments:
+
+    - COVARIANT (+): List[Cat] <: List[Animal] if Cat <: Animal
+    - CONTRAVARIANT (-): Consumer[Animal] <: Consumer[Cat] if Cat <: Animal
+    - INVARIANT (=): Container[Cat] is unrelated to Container[Animal]
+    - BIVARIANT (±): Accepts both (rare, usually indicates design issue)
+
+    Examples:
+        - Return types are covariant: fn() -> Cat <: fn() -> Animal
+        - Parameter types are contravariant: fn(Animal) <: fn(Cat)
+        - Mutable containers are invariant: List[Cat] NOT <: List[Animal]
+        - Read-only sequences are covariant: Sequence[Cat] <: Sequence[Animal]
+    """
+
+    COVARIANT = auto()      # Read-only, output position
+    CONTRAVARIANT = auto()  # Write-only, input position
+    INVARIANT = auto()      # Read-write, exact match
+    BIVARIANT = auto()      # Both (unsafe, for compatibility)
 
 # Support both relative imports (when used as subpackage) and absolute imports (standalone testing)
 try:
@@ -335,6 +364,59 @@ class ClassType(Type):
             return self.name
         args_str = ", ".join(repr(a) for a in self.type_args)
         return f"{self.name}[{args_str}]"
+
+
+@dataclass(frozen=True)
+class ProtocolType(Type):
+    """A structural protocol/interface type for duck typing.
+
+    Unlike ClassType which uses nominal subtyping (requires explicit inheritance),
+    ProtocolType uses structural subtyping: any type with the required members
+    is considered a subtype.
+
+    Used for:
+    - Python's Protocol (typing.Protocol)
+    - TypeScript interfaces
+    - Go interfaces
+    - Rust traits (when used as bounds)
+
+    Attributes:
+        name: The protocol name (for error messages)
+        members: Dict of member_name -> member_type (methods, properties)
+        type_params: Type parameters with their variances
+    """
+
+    name: str
+    members: FrozenSet[Tuple[str, Type]]  # FrozenSet for hashability
+    type_params: Tuple[Tuple[str, Variance], ...] = ()
+
+    def free_type_vars(self) -> FrozenSet[str]:
+        vars_set: FrozenSet[str] = frozenset()
+        for _, member_type in self.members:
+            vars_set = vars_set | member_type.free_type_vars()
+        return vars_set
+
+    def substitute(self, substitution: Dict[str, Type]) -> Type:
+        new_members = frozenset(
+            (name, ty.substitute(substitution)) for name, ty in self.members
+        )
+        return ProtocolType(self.name, new_members, self.type_params)
+
+    def get_member(self, name: str) -> Optional[Type]:
+        """Look up a member by name."""
+        for member_name, member_type in self.members:
+            if member_name == name:
+                return member_type
+        return None
+
+    def __repr__(self) -> str:
+        if not self.members:
+            return f"Protocol[{self.name}]"
+        members_str = ", ".join(f"{n}: {t}" for n, t in sorted(self.members))
+        return f"Protocol[{self.name}]{{{members_str}}}"
+
+    def __hash__(self) -> int:
+        return hash((self.name, self.members, self.type_params))
 
 
 @dataclass(frozen=True, slots=True)

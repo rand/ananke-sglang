@@ -105,6 +105,43 @@ except ImportError:
 
 
 @dataclass
+class NarrowingContext:
+    """Context for flow-sensitive type narrowing.
+
+    Tracks type narrowings that apply in the current control flow branch,
+    such as after `if x is not None:` or `if isinstance(x, int):`.
+
+    Attributes:
+        narrowings: Dict mapping variable names to their narrowed types
+        condition_depth: Depth of nested conditionals
+    """
+
+    narrowings: Dict[str, Type] = field(default_factory=dict)
+    condition_depth: int = 0
+
+    def narrow(self, var_name: str, narrowed_type: Type) -> "NarrowingContext":
+        """Create a new context with an additional narrowing."""
+        new_narrowings = dict(self.narrowings)
+        new_narrowings[var_name] = narrowed_type
+        return NarrowingContext(new_narrowings, self.condition_depth)
+
+    def enter_conditional(self) -> "NarrowingContext":
+        """Create a new context entering a conditional."""
+        return NarrowingContext(dict(self.narrowings), self.condition_depth + 1)
+
+    def exit_conditional(self) -> "NarrowingContext":
+        """Create a new context exiting a conditional (clears narrowings)."""
+        return NarrowingContext({}, max(0, self.condition_depth - 1))
+
+    def get_narrowed_type(self, var_name: str) -> Optional[Type]:
+        """Get the narrowed type for a variable, if any."""
+        return self.narrowings.get(var_name)
+
+
+EMPTY_NARROWING = NarrowingContext()
+
+
+@dataclass
 class TypeDomainCheckpoint:
     """Checkpoint for TypeDomain state.
 
@@ -117,12 +154,14 @@ class TypeDomainCheckpoint:
         substitution: Current unification substitution
         state_counter: The state counter value
         current_expected: The current expected type
+        narrowing_context: Flow-sensitive type narrowings
     """
 
     environment: TypeEnvironment
     substitution: Substitution
     state_counter: int
     current_expected: Optional[Type]
+    narrowing_context: NarrowingContext = field(default_factory=lambda: EMPTY_NARROWING)
 
 
 class TypeMaskCache:
@@ -396,6 +435,9 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
         self._state_counter = 0
         self._language = language
 
+        # Flow-sensitive type narrowing
+        self._narrowing_context = EMPTY_NARROWING
+
         # Lazy-initialized classifier and mask cache
         self._tokenizer = tokenizer
         self._classifier: Optional[TokenClassifier] = None
@@ -513,7 +555,8 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
         """Apply identifier blocking based on type environment.
 
         Blocks identifiers that have incompatible types according to
-        the current type environment.
+        the current type environment. Uses flow-sensitive narrowed types
+        when available (after conditionals like `if x is not None:`).
 
         Args:
             mask: The current mask (will be modified in place)
@@ -538,8 +581,13 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
             tc = self._classifier.get_classification(token_id)
             var_name = tc.text.strip()
 
-            # Look up type in environment
-            var_type = self._environment.lookup(var_name)
+            # First check for flow-sensitive narrowed type
+            var_type = self._narrowing_context.get_narrowed_type(var_name)
+
+            # Fall back to environment lookup if no narrowing
+            if var_type is None:
+                var_type = self._environment.lookup(var_name)
+
             if var_type is not None:
                 # Check compatibility with expected type
                 if not self._types_compatible(var_type, expected):
@@ -926,6 +974,7 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
             substitution=self._substitution,
             state_counter=self._state_counter,
             current_expected=self._expected_type,
+            narrowing_context=self._narrowing_context,
         )
 
     def restore(self, checkpoint: Checkpoint) -> None:
@@ -942,6 +991,45 @@ class TypeDomain(ConstraintDomain[TypeConstraint]):
         self._substitution = checkpoint.substitution
         self._state_counter = checkpoint.state_counter
         self._expected_type = checkpoint.current_expected
+        self._narrowing_context = checkpoint.narrowing_context
+
+    def narrow_type(self, var_name: str, narrowed_type: Type) -> None:
+        """Apply a type narrowing to a variable.
+
+        Used after type guards like `if x is not None:` or `if isinstance(x, int):`.
+
+        Args:
+            var_name: The variable name to narrow
+            narrowed_type: The narrowed type
+        """
+        self._narrowing_context = self._narrowing_context.narrow(var_name, narrowed_type)
+
+    def enter_conditional_branch(self) -> None:
+        """Enter a conditional branch where narrowings may apply."""
+        self._narrowing_context = self._narrowing_context.enter_conditional()
+
+    def exit_conditional_branch(self) -> None:
+        """Exit a conditional branch, clearing conditional narrowings."""
+        self._narrowing_context = self._narrowing_context.exit_conditional()
+
+    def get_effective_type(self, var_name: str) -> Optional[Type]:
+        """Get the effective type of a variable, considering narrowings.
+
+        First checks for flow-sensitive narrowings, then falls back to
+        the type environment.
+
+        Args:
+            var_name: The variable name
+
+        Returns:
+            The effective type, or None if unknown
+        """
+        # Check for narrowed type first
+        narrowed = self._narrowing_context.get_narrowed_type(var_name)
+        if narrowed is not None:
+            return narrowed
+        # Fall back to environment
+        return self._environment.lookup(var_name)
 
     def satisfiability(self, constraint: TypeConstraint) -> Satisfiability:
         """Check the satisfiability of a type constraint.
