@@ -146,6 +146,12 @@ class OpenAIServingCompletion(OpenAIServingBase):
             "regex": request.regex,
             "json_schema": request.json_schema,
             "ebnf": request.ebnf,
+            "constraint_spec": (
+                request.constraint_spec.model_dump()
+                if request.constraint_spec
+                else None
+            ),
+            "constraint_uri": request.constraint_uri,
             "n": request.n,
             "no_stop_trim": request.no_stop_trim,
             "ignore_eos": request.ignore_eos,
