@@ -16,16 +16,17 @@ import ast
 import json
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 import modal
-
-# Import the deployment app
-from qwen3_coder_ananke import Qwen3CoderAnanke, app as deployment_app
 
 # =============================================================================
 # Test Configuration
 # =============================================================================
+
+# App and class names for lookup
+DEPLOYED_APP_NAME = "qwen3-coder-ananke"
+DEPLOYED_CLASS_NAME = "Qwen3CoderAnanke"
 
 TIMEOUT_HEALTH = 30
 TIMEOUT_GENERATION = 120
@@ -55,7 +56,8 @@ def run_all_tests() -> list[dict]:
     """Run all E2E tests against the deployed Qwen3-Coder service."""
     results = []
 
-    # Get reference to the deployed server
+    # Get reference to the deployed server via lookup
+    Qwen3CoderAnanke = modal.Cls.from_name(DEPLOYED_APP_NAME, DEPLOYED_CLASS_NAME)
     server = Qwen3CoderAnanke()
 
     print("=" * 70)
@@ -169,7 +171,7 @@ def _result_to_dict(r: TestResult) -> dict:
 # Phase 1: Health & Deployment Tests
 # =============================================================================
 
-def test_liveness(server: Qwen3CoderAnanke) -> TestResult:
+def test_liveness(server: Any) -> TestResult:
     """Test that the server is alive."""
     name = "1.1 Liveness Check"
     start = time.time()
@@ -191,7 +193,7 @@ def test_liveness(server: Qwen3CoderAnanke) -> TestResult:
         return TestResult(name, False, duration, str(e))
 
 
-def test_readiness(server: Qwen3CoderAnanke) -> TestResult:
+def test_readiness(server: Any) -> TestResult:
     """Test that the server is ready to generate."""
     name = "1.2 Readiness Check"
     start = time.time()
@@ -213,7 +215,7 @@ def test_readiness(server: Qwen3CoderAnanke) -> TestResult:
         return TestResult(name, False, duration, str(e))
 
 
-def test_models_endpoint(server: Qwen3CoderAnanke) -> TestResult:
+def test_models_endpoint(server: Any) -> TestResult:
     """Test the models endpoint."""
     name = "1.3 Models Endpoint"
     start = time.time()
@@ -245,7 +247,7 @@ def test_models_endpoint(server: Qwen3CoderAnanke) -> TestResult:
 # Phase 2: Basic Generation Tests
 # =============================================================================
 
-def test_simple_generation(server: Qwen3CoderAnanke) -> TestResult:
+def test_simple_generation(server: Any) -> TestResult:
     """Test simple code generation."""
     name = "2.1 Simple Generation"
     start = time.time()
@@ -274,7 +276,7 @@ def test_simple_generation(server: Qwen3CoderAnanke) -> TestResult:
         return TestResult(name, False, duration, str(e))
 
 
-def test_function_completion(server: Qwen3CoderAnanke) -> TestResult:
+def test_function_completion(server: Any) -> TestResult:
     """Test function body completion."""
     name = "2.2 Function Completion"
     start = time.time()
@@ -310,7 +312,7 @@ def test_function_completion(server: Qwen3CoderAnanke) -> TestResult:
         return TestResult(name, False, duration, str(e))
 
 
-def test_chat_completion(server: Qwen3CoderAnanke) -> TestResult:
+def test_chat_completion(server: Any) -> TestResult:
     """Test chat-based code generation."""
     name = "2.3 Chat Completion"
     start = time.time()
@@ -352,7 +354,7 @@ def test_chat_completion(server: Qwen3CoderAnanke) -> TestResult:
 # Phase 3: Ananke Constraint Tests
 # =============================================================================
 
-def test_syntax_constraint(server: Qwen3CoderAnanke) -> TestResult:
+def test_syntax_constraint(server: Any) -> TestResult:
     """Test syntax-only constraint produces valid Python."""
     name = "3.1 Syntax Constraint"
     start = time.time()
@@ -398,7 +400,7 @@ def test_syntax_constraint(server: Qwen3CoderAnanke) -> TestResult:
         return TestResult(name, False, duration, str(e))
 
 
-def test_type_constraint(server: Qwen3CoderAnanke) -> TestResult:
+def test_type_constraint(server: Any) -> TestResult:
     """Test type-aware constraint."""
     name = "3.2 Type Constraint"
     start = time.time()
@@ -437,7 +439,7 @@ def test_type_constraint(server: Qwen3CoderAnanke) -> TestResult:
         return TestResult(name, False, duration, str(e))
 
 
-def test_multiple_domains(server: Qwen3CoderAnanke) -> TestResult:
+def test_multiple_domains(server: Any) -> TestResult:
     """Test multiple constraint domains."""
     name = "3.3 Multiple Domains"
     start = time.time()
@@ -484,7 +486,7 @@ def test_multiple_domains(server: Qwen3CoderAnanke) -> TestResult:
 # Phase 4: Code Quality Tests
 # =============================================================================
 
-def test_recursive_function(server: Qwen3CoderAnanke) -> TestResult:
+def test_recursive_function(server: Any) -> TestResult:
     """Test generation of recursive function."""
     name = "4.1 Recursive Function"
     start = time.time()
@@ -528,7 +530,7 @@ def test_recursive_function(server: Qwen3CoderAnanke) -> TestResult:
         return TestResult(name, False, duration, str(e))
 
 
-def test_class_generation(server: Qwen3CoderAnanke) -> TestResult:
+def test_class_generation(server: Any) -> TestResult:
     """Test class generation."""
     name = "4.2 Class Generation"
     start = time.time()
@@ -572,7 +574,7 @@ def test_class_generation(server: Qwen3CoderAnanke) -> TestResult:
 # Phase 5: Performance Tests
 # =============================================================================
 
-def test_latency_benchmark(server: Qwen3CoderAnanke) -> TestResult:
+def test_latency_benchmark(server: Any) -> TestResult:
     """Benchmark generation latency."""
     name = "5.1 Latency Benchmark"
     start = time.time()

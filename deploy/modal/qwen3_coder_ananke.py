@@ -59,8 +59,8 @@ CONTAINER_IDLE_TIMEOUT = 600  # 10 minutes - longer for expensive model
 MIN_CONTAINERS = 0
 MAX_CONTAINERS = 5
 
-# Timeout for model loading (MoE is large)
-MODEL_LOAD_TIMEOUT = 600  # 10 minutes
+# Timeout for model loading (MoE is large - 60GB takes 15-20 min)
+MODEL_LOAD_TIMEOUT = 1500  # 25 minutes
 
 # =============================================================================
 # Modal App Setup
@@ -188,12 +188,17 @@ class Qwen3CoderAnanke:
         print(f"GPU Memory Fraction: {MEM_FRACTION_STATIC}")
         print(f"Max Concurrent Requests: {MAX_RUNNING_REQUESTS}")
 
+        # Start server with output going to a log file for debugging
+        import threading
+
+        log_file = open("/tmp/sglang_server.log", "w")
         self.server_process = subprocess.Popen(
             cmd,
             env=env,
-            stdout=subprocess.PIPE,
+            stdout=log_file,
             stderr=subprocess.STDOUT,
         )
+        self._log_file = log_file
 
         # Wait for server to be ready (MoE model takes longer to load)
         print(f"Waiting up to {MODEL_LOAD_TIMEOUT}s for model to load...")
@@ -234,6 +239,29 @@ class Qwen3CoderAnanke:
             except subprocess.TimeoutExpired:
                 self.server_process.kill()
 
+    def _get_server_logs(self, lines: int = 100) -> str:
+        """Get recent server logs for debugging."""
+        try:
+            with open("/tmp/sglang_server.log", "r") as f:
+                all_lines = f.readlines()
+                return "".join(all_lines[-lines:])
+        except Exception as e:
+            return f"Could not read logs: {e}"
+
+    def _check_server_alive(self) -> bool:
+        """Check if server process is still running."""
+        if self.server_process is None:
+            return False
+        return self.server_process.poll() is None
+
+    @modal.method()
+    def get_server_logs(self, lines: int = 200) -> dict:
+        """Get server logs for debugging."""
+        return {
+            "logs": self._get_server_logs(lines),
+            "process_alive": self._check_server_alive(),
+        }
+
     @modal.method()
     def health(self) -> dict:
         """Health check endpoint."""
@@ -243,9 +271,15 @@ class Qwen3CoderAnanke:
             return {
                 "status": "healthy" if response.status_code == 200 else "unhealthy",
                 "model": self.model_path,
+                "process_alive": self._check_server_alive(),
             }
         except Exception as e:
-            return {"status": "unhealthy", "error": str(e)}
+            return {
+                "status": "unhealthy",
+                "error": str(e),
+                "process_alive": self._check_server_alive(),
+                "recent_logs": self._get_server_logs(50),
+            }
 
     @modal.method()
     def health_generate(self) -> dict:
@@ -307,8 +341,8 @@ class Qwen3CoderAnanke:
             constraint_spec: Ananke constraint specification, e.g.:
                 {
                     "language": "python",
-                    "domains": ["syntax", "types"],
-                    "typing_context": {...}
+                    "type_bindings": [{"name": "x", "type_expr": "int"}],
+                    "expected_type": "int"
                 }
             max_tokens: Maximum tokens to generate
             **kwargs: Additional generation parameters
@@ -491,17 +525,31 @@ def main():
     )
     print(f"Generated:\n{result}")
 
-    # Test constrained generation (syntax only)
-    print("\n[5] Testing syntax-constrained generation...")
+    # Test constrained generation with regex
+    print("\n[5] Testing syntax-constrained generation (regex)...")
     result = server.generate_constrained.remote(
-        prompt="def calculate_sum(numbers: list[int]) -> int:",
+        prompt="The answer is: ",
         constraint_spec={
             "language": "python",
-            "domains": ["syntax"],
+            "regex": "[0-9]+",
         },
-        max_tokens=100,
+        max_tokens=10,
     )
-    print(f"Constrained (syntax):\n{result['text']}")
+    print(f"Constrained (regex=[0-9]+):\n{result['text']}")
+
+    # Test constraint_spec with syntax + domain context (fully supported)
+    print("\n[5b] Testing constraint_spec with syntax + type context...")
+    result = server.generate_constrained.remote(
+        prompt="x = ",
+        constraint_spec={
+            "language": "python",
+            "regex": "[0-9]+",  # Syntax constraint required for domain constraints
+            "type_bindings": [{"name": "x", "type_expr": "int"}],
+            "expected_type": "int",
+        },
+        max_tokens=10,
+    )
+    print(f"Constrained (regex + type context):\n{result['text']}")
 
     # Test chat endpoint
     print("\n[6] Testing chat completion...")
