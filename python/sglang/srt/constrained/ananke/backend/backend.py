@@ -56,6 +56,8 @@ try:
     from ..core.unified import UNIFIED_TOP, UnifiedConstraint
     from ..domains.types.domain import TypeDomain
     from ..domains.imports.domain import ImportDomain
+    from ..domains.imports.constraint import IMPORT_TOP, ImportConstraint
+    from ..domains.types.constraint import TypeConstraint, TYPE_TOP, AnyType
     from ..domains.controlflow.domain import ControlFlowDomain
     from ..domains.semantics.domain import SemanticDomain
     from ..adaptive.intensity import (
@@ -71,6 +73,8 @@ except ImportError:
     from core.unified import UNIFIED_TOP, UnifiedConstraint
     from domains.types.domain import TypeDomain
     from domains.imports.domain import ImportDomain
+    from domains.imports.constraint import IMPORT_TOP, ImportConstraint
+    from domains.types.constraint import TypeConstraint, TYPE_TOP, AnyType
     from domains.controlflow.domain import ControlFlowDomain
     from domains.semantics.domain import SemanticDomain
     from adaptive.intensity import (
@@ -322,10 +326,17 @@ class AnankeBackend(BaseGrammarBackend):
         # Select domains based on intensity
         effective_domains = self._select_domains_for_intensity(intensity, constraint_spec)
 
+        # Create unified constraint with domain constraints from spec
+        # Pass domains so TypeConstraint can be built from seeded TypeDomain
+        unified_constraint = (
+            self._create_unified_constraint_from_spec(constraint_spec, effective_domains)
+            if constraint_spec else UNIFIED_TOP
+        )
+
         return AnankeGrammar(
             syntax_grammar=syntax_grammar,
             domains=effective_domains,
-            constraint=UNIFIED_TOP,
+            constraint=unified_constraint,
             vocab_size=self.vocab_size,
             device="cuda",
             tokenizer=self.tokenizer,
@@ -434,17 +445,39 @@ class AnankeBackend(BaseGrammarBackend):
         - Semantic constraints
 
         The method:
-        1. Resolves the effective language from spec and backend defaults
-        2. Creates syntax grammar from the core constraint
-        3. Creates domains with context seeded from the spec
-        4. Returns configured AnankeGrammar
+        1. Validates the spec has meaningful constraints
+        2. Resolves the effective language from spec and backend defaults
+        3. Creates syntax grammar from the core constraint
+        4. Creates domains with context seeded from the spec
+        5. Returns configured AnankeGrammar
 
         Args:
             spec: Rich constraint specification
 
         Returns:
-            AnankeGrammar instance or INVALID_GRAMMAR_OBJ on error
+            AnankeGrammar instance, None if spec has no constraints,
+            or INVALID_GRAMMAR_OBJ on error
         """
+        # 0. Validate spec has syntax constraint
+        # Domain-only constraints (type_bindings without syntax) are not fully supported
+        # and may cause issues. Require a syntax constraint for now.
+        if not spec.has_syntax_constraint():
+            if spec.has_domain_context():
+                logger.warning(
+                    "constraint_spec has domain context (type_bindings, imports, etc.) "
+                    "but no syntax constraint (json_schema, regex, ebnf). "
+                    "Domain-only constraints are not fully supported. "
+                    "Please add a syntax constraint for reliable constraint enforcement."
+                )
+            else:
+                logger.warning(
+                    "constraint_spec has no syntax constraint (json_schema, regex, ebnf) "
+                    "and no domain context (type_bindings, imports, etc.). "
+                    "This will result in unconstrained generation."
+                )
+            # Return None to indicate no grammar needed - request proceeds unconstrained
+            return None
+
         # 1. Resolve effective language
         effective_language = self._resolve_language(spec)
 
@@ -456,11 +489,15 @@ class AnankeBackend(BaseGrammarBackend):
         # 3. Create domains with context from spec
         domains = self._create_domains_with_spec(spec, effective_language)
 
-        # 4. Create and return grammar with spec
+        # 4. Create unified constraint with domain constraints from spec
+        # Pass domains so TypeConstraint can be built from seeded TypeDomain
+        unified_constraint = self._create_unified_constraint_from_spec(spec, domains)
+
+        # 5. Create and return grammar with spec
         return AnankeGrammar(
             syntax_grammar=syntax_grammar,
             domains=domains,
-            constraint=UNIFIED_TOP,
+            constraint=unified_constraint,
             vocab_size=self.vocab_size,
             device="cuda",
             tokenizer=self.tokenizer,
@@ -674,12 +711,56 @@ class AnankeBackend(BaseGrammarBackend):
         if spec.available_modules and hasattr(domain, "set_available_modules"):
             domain.set_available_modules(spec.available_modules)
 
-        # Note: set_forbidden_imports returns a constraint, not modifies domain
-        # The forbidden imports are handled via constraint creation
-        # if spec.forbidden_imports and hasattr(domain, "set_forbidden_imports"):
-        #     domain.set_forbidden_imports(spec.forbidden_imports)
+        # Note: forbidden_imports are handled via UnifiedConstraint creation
+        # in _create_unified_constraint_from_spec, not by modifying domain state
 
         return domain
+
+    def _create_unified_constraint_from_spec(
+        self,
+        spec: "ConstraintSpec",
+        domains: Optional[Dict[str, ConstraintDomain]] = None,
+    ) -> UnifiedConstraint:
+        """Create UnifiedConstraint with domain constraints from spec.
+
+        This builds a constraint that combines all domain-specific restrictions:
+        - ImportConstraint with forbidden_imports
+        - TypeConstraint with expected_type from seeded TypeDomain
+
+        Args:
+            spec: Constraint specification
+            domains: Optional dict of seeded domains (to extract type constraints)
+
+        Returns:
+            UnifiedConstraint with all applicable domain constraints
+        """
+        constraint = UNIFIED_TOP
+
+        # Build ImportConstraint if forbidden_imports specified
+        if spec.forbidden_imports:
+            import_constraint = ImportConstraint(
+                forbidden=frozenset(spec.forbidden_imports)
+            )
+            constraint = constraint.with_imports(import_constraint)
+            logger.debug(
+                f"Created ImportConstraint with forbidden={spec.forbidden_imports}"
+            )
+
+        # Build TypeConstraint from seeded TypeDomain's expected_type
+        if domains and "types" in domains:
+            type_domain = domains["types"]
+            # Check if domain has an expected_type set (from spec.expected_type or type_bindings)
+            if hasattr(type_domain, "expected_type"):
+                expected = type_domain.expected_type
+                # Only create constraint if expected_type is meaningful (not Any)
+                if expected is not None and not isinstance(expected, AnyType):
+                    type_constraint = TypeConstraint(expected_type=expected)
+                    constraint = constraint.with_types(type_constraint)
+                    logger.debug(
+                        f"Created TypeConstraint with expected_type={expected}"
+                    )
+
+        return constraint
 
     def _create_cf_domain_with_spec(
         self,

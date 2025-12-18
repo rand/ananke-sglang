@@ -543,9 +543,11 @@ class AnankeGrammar(BaseGrammarObject):
             return self.syntax_grammar.allocate_vocab_mask(vocab_size, batch_size, device)
 
         # Fallback: allocate standard bitmask (int32, 32 tokens per element)
+        # Initialize to all 1s (all tokens allowed) so domain constraints can restrict
+        # Using -1 for signed int32 sets all bits to 1
         mask_size = (vocab_size + 31) // 32
-        return torch.zeros(
-            (batch_size, mask_size), dtype=torch.int32, device=device
+        return torch.full(
+            (batch_size, mask_size), fill_value=-1, dtype=torch.int32, device=device
         )
 
     @staticmethod

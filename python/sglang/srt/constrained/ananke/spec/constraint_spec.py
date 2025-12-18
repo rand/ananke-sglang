@@ -744,6 +744,44 @@ class ConstraintSpec:
             [self.json_schema, self.regex, self.ebnf, self.structural_tag]
         )
 
+    def has_domain_context(self) -> bool:
+        """Check if any domain context is specified.
+
+        Domain context includes type bindings, function signatures, imports,
+        control flow context, or semantic constraints that would enable
+        non-trivial domain-level masking.
+
+        Returns:
+            True if any domain context is present
+        """
+        return bool(
+            self.type_bindings
+            or self.function_signatures
+            or self.class_definitions
+            or self.expected_type
+            or self.type_aliases
+            or self.imports
+            or self.available_modules
+            or self.forbidden_imports
+            or self.control_flow
+            or self.semantic_constraints
+        )
+
+    def has_any_constraint(self) -> bool:
+        """Check if the spec has any meaningful constraint.
+
+        A constraint_spec should have either:
+        - A syntax constraint (json_schema, regex, ebnf, structural_tag)
+        - Domain context (type bindings, imports, etc.)
+
+        A spec with only 'language' but no syntax or domain context is
+        semantically empty and will not apply any actual constraints.
+
+        Returns:
+            True if the spec has meaningful constraints
+        """
+        return self.has_syntax_constraint() or self.has_domain_context()
+
     def get_intensity(self) -> Optional["ConstraintIntensity"]:
         """Get parsed ConstraintIntensity from intensity string.
 
