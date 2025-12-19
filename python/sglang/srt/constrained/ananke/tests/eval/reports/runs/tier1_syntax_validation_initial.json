@@ -1,0 +1,195 @@
+{
+  "name": "Tier1-Syntax-Validation",
+  "tier": "SYNTAX",
+  "timestamp": "2025-12-18T13:49:24.597292",
+  "duration_seconds": 0.02,
+  "summary": {
+    "total": 92,
+    "satisfied": 92,
+    "partial": 0,
+    "failed": 0,
+    "errors": 0,
+    "satisfaction_rate": 1.0,
+    "error_rate": 0.0,
+    "baseline_improvement_rate": null,
+    "by_language": {
+      "python": {
+        "total": 9,
+        "satisfied": 9,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      },
+      "rust": {
+        "total": 2,
+        "satisfied": 2,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      },
+      "zig": {
+        "total": 19,
+        "satisfied": 19,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      },
+      "typescript": {
+        "total": 19,
+        "satisfied": 19,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      },
+      "go": {
+        "total": 21,
+        "satisfied": 21,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      },
+      "kotlin": {
+        "total": 20,
+        "satisfied": 20,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      },
+      "swift": {
+        "total": 2,
+        "satisfied": 2,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      }
+    },
+    "by_domain": {
+      "types": {
+        "total": 21,
+        "satisfied": 21,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      },
+      "imports": {
+        "total": 14,
+        "satisfied": 14,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      },
+      "controlflow": {
+        "total": 22,
+        "satisfied": 22,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      },
+      "semantics": {
+        "total": 14,
+        "satisfied": 14,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      },
+      "syntax": {
+        "total": 13,
+        "satisfied": 13,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      },
+      "comptime": {
+        "total": 3,
+        "satisfied": 3,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      },
+      "coroutines": {
+        "total": 5,
+        "satisfied": 5,
+        "partial": 0,
+        "failed": 0,
+        "errors": 0,
+        "satisfaction_rate": 1.0,
+        "error_rate": 0.0,
+        "baseline_improvement_rate": null,
+        "by_language": {},
+        "by_domain": {}
+      }
+    }
+  },
+  "config": {
+    "tier": "SYNTAX",
+    "languages": null,
+    "domains": null,
+    "sample_count": 1,
+    "compare_baseline": false
+  }
+}
