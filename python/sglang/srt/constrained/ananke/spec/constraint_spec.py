@@ -671,6 +671,11 @@ class ConstraintSpec:
         enabled_domains: Domains to enable (overrides backend default)
         disabled_domains: Domains to disable
         domain_configs: Per-domain configuration
+        allow_relaxation: Enable progressive domain relaxation
+        relaxation_threshold: Minimum popcount before relaxation triggers
+        relaxation_domains: Domains that can be relaxed (default: all except syntax)
+        enable_early_termination: Stop generation when regex satisfied at boundary
+        max_tokens: Per-constraint token limit (overrides request-level if set)
         cache_scope: What to include in cache key
         context_hash: Pre-computed context hash for efficiency
         source: How the specification was provided
@@ -692,6 +697,7 @@ class ConstraintSpec:
     # === Core Syntax Constraint (exactly one required for grammar) ===
     json_schema: Optional[str] = None
     regex: Optional[str] = None
+    negative_regex: Optional[str] = None  # Pattern that output must NOT match
     ebnf: Optional[str] = None
     structural_tag: Optional[str] = None
 
@@ -729,6 +735,21 @@ class ConstraintSpec:
     # When set to "auto", intensity is determined by TaskComplexityAssessor
     intensity: Optional[str] = None  # String to avoid circular import; parsed at runtime
     intensity_config: Dict[str, Any] = field(default_factory=dict)  # IntensityConfig overrides
+
+    # === Mask Relaxation ===
+    # When enabled, domain constraints are applied progressively and skipped if
+    # they would reduce the token mask popcount below the threshold
+    allow_relaxation: bool = True
+    relaxation_threshold: int = 10  # Minimum popcount before relaxation triggers
+    relaxation_domains: Optional[List[str]] = None  # Domains that can be relaxed (default: all except syntax)
+
+    # === Early Termination ===
+    # Stop generation when the regex constraint is satisfied at a natural code boundary
+    enable_early_termination: bool = True
+
+    # === Generation Limits ===
+    # Per-constraint token limit; overrides request-level max_tokens if set
+    max_tokens: Optional[int] = None
 
     # === Cache Control ===
     cache_scope: CacheScope = CacheScope.SYNTAX_ONLY
@@ -885,6 +906,8 @@ class ConstraintSpec:
             d["json_schema"] = self.json_schema
         if self.regex is not None:
             d["regex"] = self.regex
+        if self.negative_regex is not None:
+            d["negative_regex"] = self.negative_regex
         if self.ebnf is not None:
             d["ebnf"] = self.ebnf
         if self.structural_tag is not None:
@@ -964,6 +987,7 @@ class ConstraintSpec:
             # Core syntax constraint
             json_schema=d.get("json_schema"),
             regex=d.get("regex"),
+            negative_regex=d.get("negative_regex"),
             ebnf=d.get("ebnf"),
             structural_tag=d.get("structural_tag"),
             # Language configuration
@@ -1068,6 +1092,213 @@ class ConstraintSpec:
         d = self.to_dict()
         d.update(updates)
         return self.from_dict(d)
+
+    # =========================================================================
+    # Factory Methods for Ergonomic Construction
+    # =========================================================================
+
+    @classmethod
+    def from_regex(
+        cls,
+        pattern: str,
+        language: Optional[str] = None,
+        expected_type: Optional[str] = None,
+    ) -> "ConstraintSpec":
+        """Create a regex constraint specification.
+
+        Factory method for simple regex-based constrained generation.
+
+        Args:
+            pattern: Regular expression pattern that output must match
+            language: Optional language hint (python, rust, typescript, etc.)
+            expected_type: Optional expected type of the generated expression
+
+        Returns:
+            ConstraintSpec configured with the regex pattern
+
+        Example:
+            >>> # Simple regex constraint
+            >>> spec = ConstraintSpec.from_regex(r'^\\s+return\\s+')
+            >>>
+            >>> # With language hint
+            >>> spec = ConstraintSpec.from_regex(
+            ...     r'^\\s+if n <= 1:',
+            ...     language="python",
+            ... )
+            >>>
+            >>> # With expected type
+            >>> spec = ConstraintSpec.from_regex(
+            ...     r'^return\\s+\\[',
+            ...     language="python",
+            ...     expected_type="List[int]",
+            ... )
+        """
+        return cls(
+            regex=pattern,
+            language=language,
+            expected_type=expected_type,
+        )
+
+    @classmethod
+    def from_json_schema(
+        cls,
+        schema: Union[str, Dict[str, Any]],
+        language: Optional[str] = None,
+    ) -> "ConstraintSpec":
+        """Create a JSON schema constraint specification.
+
+        Factory method for JSON schema-based constrained generation.
+
+        Args:
+            schema: JSON schema as string or dict
+            language: Optional language hint
+
+        Returns:
+            ConstraintSpec configured with the JSON schema
+
+        Example:
+            >>> spec = ConstraintSpec.from_json_schema({
+            ...     "type": "object",
+            ...     "properties": {
+            ...         "name": {"type": "string"},
+            ...         "age": {"type": "integer"},
+            ...     },
+            ...     "required": ["name", "age"],
+            ... })
+        """
+        if isinstance(schema, dict):
+            schema = json.dumps(schema)
+        return cls(
+            json_schema=schema,
+            language=language,
+        )
+
+    @classmethod
+    def from_ebnf(
+        cls,
+        grammar: str,
+        language: Optional[str] = None,
+    ) -> "ConstraintSpec":
+        """Create an EBNF grammar constraint specification.
+
+        Factory method for EBNF-based constrained generation.
+
+        Args:
+            grammar: EBNF grammar string
+            language: Optional language hint
+
+        Returns:
+            ConstraintSpec configured with the EBNF grammar
+
+        Example:
+            >>> spec = ConstraintSpec.from_ebnf('''
+            ...     root ::= greeting name "!"
+            ...     greeting ::= "Hello, " | "Hi, "
+            ...     name ::= [A-Za-z]+
+            ... ''')
+        """
+        return cls(
+            ebnf=grammar,
+            language=language,
+        )
+
+    @classmethod
+    def from_structural_tag(
+        cls,
+        tag: str,
+        language: Optional[str] = None,
+    ) -> "ConstraintSpec":
+        """Create a structural tag constraint specification.
+
+        Factory method for structural tag-based constrained generation.
+
+        Args:
+            tag: Structural tag identifier
+            language: Optional language hint
+
+        Returns:
+            ConstraintSpec configured with the structural tag
+        """
+        return cls(
+            structural_tag=tag,
+            language=language,
+        )
+
+    @classmethod
+    def for_completion(
+        cls,
+        language: str,
+        expected_type: Optional[str] = None,
+        in_function: Optional[str] = None,
+        return_type: Optional[str] = None,
+        type_bindings: Optional[List["TypeBinding"]] = None,
+    ) -> "ConstraintSpec":
+        """Create a constraint specification for code completion.
+
+        Factory method for code completion scenarios with type context.
+
+        Args:
+            language: Programming language
+            expected_type: Expected type of the generated expression
+            in_function: Name of containing function (if any)
+            return_type: Expected return type (if in function)
+            type_bindings: Variable type bindings in scope
+
+        Returns:
+            ConstraintSpec configured for code completion
+
+        Example:
+            >>> spec = ConstraintSpec.for_completion(
+            ...     language="python",
+            ...     expected_type="int",
+            ...     in_function="fibonacci",
+            ...     return_type="int",
+            ...     type_bindings=[
+            ...         TypeBinding("n", "int", scope="parameter"),
+            ...     ],
+            ... )
+        """
+        control_flow = None
+        if in_function or return_type:
+            control_flow = ControlFlowContext(
+                function_name=in_function,
+                expected_return_type=return_type,
+            )
+
+        return cls(
+            language=language,
+            language_detection=LanguageDetection.EXPLICIT,
+            expected_type=expected_type,
+            type_bindings=type_bindings or [],
+            control_flow=control_flow,
+        )
+
+    @classmethod
+    def builder(cls) -> "ConstraintBuilder":
+        """Get a fluent builder for constructing ConstraintSpec.
+
+        Returns a ConstraintBuilder instance for ergonomic construction
+        of complex constraint specifications.
+
+        Returns:
+            New ConstraintBuilder instance
+
+        Example:
+            >>> spec = (
+            ...     ConstraintSpec.builder()
+            ...     .language("python")
+            ...     .regex(r"^return\\s+")
+            ...     .type_binding("x", "int")
+            ...     .expected_type("int")
+            ...     .build()
+            ... )
+        """
+        from ..client import ConstraintBuilder
+        return ConstraintBuilder()
+
+
+# Type alias for use in factory method
+ConstraintBuilder = Any  # Forward reference, actual import done at runtime
 
 
 # =============================================================================
