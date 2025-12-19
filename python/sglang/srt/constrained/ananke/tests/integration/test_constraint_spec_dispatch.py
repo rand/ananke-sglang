@@ -349,20 +349,20 @@ class TestActualMaskComputation:
     
     def test_top_constraint_produces_all_true_mask(self, backend):
         """Verify that TOP constraint allows all tokens."""
-        from core.domain import PassthroughDomain
-        
+        from core.domain import PassthroughDomain, GenerationContext
+        from core.constraint import TOP, BOTTOM
+
         # Create a passthrough domain (should always return TOP)
-        domain = PassthroughDomain(name="test")
-        
+        domain = PassthroughDomain(domain_name="test", top_constraint=TOP, bottom_constraint=BOTTOM)
+
         # Create context
-        from core.domain import GenerationContext
         context = GenerationContext(
             vocab_size=100,
             device="cpu",
         )
-        
+
         # Get mask for TOP constraint
-        mask = domain.token_mask(domain.top, context)
+        mask = domain.token_mask(TOP, context)
         
         print(f"\n[mask-computation] Mask shape: {mask.shape}")
         print(f"[mask-computation] True count: {mask.sum().item()}/{mask.numel()}")
