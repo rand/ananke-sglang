@@ -159,6 +159,7 @@ fn read_config(path: &Path) -> Result<Config, ConfigError> {
         tags=["error-handling", "result-type", "discriminated-union", "cross-language"],
         language="typescript",
         domain="controlflow",
+        max_tokens=2048,  # TypeScript try/catch with Result type is verbose
     ),
 
     # Go: Multi-return error pattern
@@ -235,7 +236,7 @@ fn read_config(path: &Path) -> Result<Config, ConfigError> {
         tags=["error-handling", "error-union", "errdefer", "cross-language"],
         language="zig",
         domain="controlflow",
-        max_tokens=2560,  # Zig error handling with comments is verbose
+        max_tokens=4096,  # Zig error handling with comments is very verbose
     ),
 
     # Kotlin: Sealed class Result with runCatching
