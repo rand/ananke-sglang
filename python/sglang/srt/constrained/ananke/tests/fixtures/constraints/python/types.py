@@ -44,7 +44,8 @@ def filter_items(items: List[T], pred: Callable[[T], bool]) -> List[T]:
             expected_type="List[T]",
             # Regex enforces list construction: list literal [...] or list() call
             # Blocks set {}, tuple(), dict {k:v}, and bare iterators
-            regex=r"^return\s+(\[.*\]|list\s*\(.*\))$",
+            # Allows optional trailing comments (# type: ignore, etc.)
+            regex=r"^return\s+(\[.*\]|list\s*\(.*\))(\s*#.*)?$",
             type_bindings=[
                 TypeBinding(name="items", type_expr="List[T]", scope="parameter"),
                 TypeBinding(

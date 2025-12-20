@@ -235,6 +235,7 @@ fn read_config(path: &Path) -> Result<Config, ConfigError> {
         tags=["error-handling", "error-union", "errdefer", "cross-language"],
         language="zig",
         domain="controlflow",
+        max_tokens=2560,  # Zig error handling with comments is verbose
     ),
 
     # Kotlin: Sealed class Result with runCatching

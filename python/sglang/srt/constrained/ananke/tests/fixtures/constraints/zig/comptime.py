@@ -352,7 +352,7 @@ nl ::= "\n"
         tags=["comptime", "allocator", "interface", "vtable", "memory-management"],
         language="zig",
         domain="comptime",
-        max_tokens=2560,  # Allocator with vtable is verbose
+        max_tokens=4096,  # Allocator with vtable is very verbose
     ),
     ConstraintExample(
         id="zig-comptime-003",
