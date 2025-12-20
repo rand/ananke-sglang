@@ -137,8 +137,8 @@ google_import ::= "\"google.golang.org/grpc\""
 tmpl := """,
         spec=ConstraintSpec(
             language="go",
-            # Regex matches Go template syntax {{.Field}}, {{- .Field -}}, etc.
-            regex=r'\{\{[^}]*\.\w+[^}]*\}\}',
+            # Regex matches Go template syntax: {{.Field}}, {{if}}, {{range}}, {{define}}, etc.
+            regex=r'\{\{-?\s*(?:\.\w+|if|else|end|range|template|define|block|with)\b',
             ebnf=r'''
 root ::= simple_tmpl | if_tmpl | range_tmpl | nested_tmpl | trim_tmpl
 simple_tmpl ::= "tmpl := `Hello {{.Name}}!`"
