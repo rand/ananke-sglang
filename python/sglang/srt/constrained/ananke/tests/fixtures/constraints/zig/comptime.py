@@ -198,6 +198,7 @@ nl ::= "\n"
         tags=["comptime", "generics", "data-structures", "metaprogramming"],
         language="zig",
         domain="comptime",
+        max_tokens=2048,  # Complex generic struct needs more tokens
     ),
     ConstraintExample(
         id="zig-comptime-002",
@@ -351,6 +352,7 @@ nl ::= "\n"
         tags=["comptime", "allocator", "interface", "vtable", "memory-management"],
         language="zig",
         domain="comptime",
+        max_tokens=2560,  # Allocator with vtable is verbose
     ),
     ConstraintExample(
         id="zig-comptime-003",

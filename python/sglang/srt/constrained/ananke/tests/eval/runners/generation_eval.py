@@ -358,6 +358,13 @@ class GenerationEvalRunner:
             spec["available_modules"] = list(example.spec.available_modules)
         if example.spec.expected_type:
             spec["expected_type"] = example.spec.expected_type
+        if example.spec.negative_regex:
+            spec["negative_regex"] = example.spec.negative_regex
+
+        # Pass relaxation config - critical for avoiding garbage output
+        # on strict constraints like kt-sem-003
+        spec["allow_relaxation"] = example.spec.allow_relaxation
+        spec["relaxation_threshold"] = example.spec.relaxation_threshold
 
         return spec
 

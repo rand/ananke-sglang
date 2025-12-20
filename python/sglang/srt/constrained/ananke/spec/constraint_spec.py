@@ -977,6 +977,12 @@ class ConstraintSpec:
         if self.source_uri is not None:
             d["source_uri"] = self.source_uri
 
+        # Relaxation config (only include non-defaults)
+        if not self.allow_relaxation:
+            d["allow_relaxation"] = self.allow_relaxation
+        if self.relaxation_threshold != 10:
+            d["relaxation_threshold"] = self.relaxation_threshold
+
         return d
 
     @classmethod
@@ -1047,6 +1053,9 @@ class ConstraintSpec:
             # Source tracking
             source=ConstraintSource(d.get("source", "inline")),
             source_uri=d.get("source_uri"),
+            # Relaxation config
+            allow_relaxation=d.get("allow_relaxation", True),
+            relaxation_threshold=d.get("relaxation_threshold", 10),
         )
 
     @classmethod

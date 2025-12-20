@@ -183,6 +183,7 @@ nl ::= "\n"
         tags=["semantics", "memory-leak", "ownership", "deinit-pattern"],
         language="zig",
         domain="semantics",
+        max_tokens=2048,  # Container with init/deinit is verbose
     ),
     ConstraintExample(
         id="zig-semantics-003",

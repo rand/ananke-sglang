@@ -333,6 +333,14 @@ class AnankeBackend(BaseGrammarBackend):
             if constraint_spec else UNIFIED_TOP
         )
 
+        # Extract relaxation config from constraint_spec
+        allow_relaxation = (
+            constraint_spec.allow_relaxation if constraint_spec else True
+        )
+        relaxation_threshold = (
+            constraint_spec.relaxation_threshold if constraint_spec else 10
+        )
+
         return AnankeGrammar(
             syntax_grammar=syntax_grammar,
             domains=effective_domains,
@@ -344,6 +352,8 @@ class AnankeBackend(BaseGrammarBackend):
             max_rollback_tokens=self.max_rollback_tokens,
             constraint_spec=constraint_spec,
             intensity=intensity,
+            allow_relaxation=allow_relaxation,
+            relaxation_threshold=relaxation_threshold,
         )
 
     def _determine_intensity(
@@ -504,6 +514,8 @@ class AnankeBackend(BaseGrammarBackend):
             language=effective_language,
             max_rollback_tokens=self.max_rollback_tokens,
             constraint_spec=spec,
+            allow_relaxation=spec.allow_relaxation,
+            relaxation_threshold=spec.relaxation_threshold,
         )
 
     def _resolve_language(self, spec: "ConstraintSpec") -> str:
