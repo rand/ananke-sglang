@@ -239,6 +239,10 @@ class ConstraintSpecFormat(BaseModel):
     # Cache control
     cache_scope: str = "syntax_only"  # "syntax_only", "syntax_and_lang", "full_context"
 
+    # Mask relaxation config
+    allow_relaxation: bool = True  # Enable progressive domain relaxation
+    relaxation_threshold: int = 10  # Minimum popcount before relaxation triggers
+
 
 # NOTE(dark): keep this for backward compatibility
 class LegacyStructuralTagResponseFormat(BaseModel):
