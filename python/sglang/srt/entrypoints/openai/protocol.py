@@ -243,6 +243,9 @@ class ConstraintSpecFormat(BaseModel):
     allow_relaxation: bool = True  # Enable progressive domain relaxation
     relaxation_threshold: int = 10  # Minimum popcount before relaxation triggers
 
+    # Early termination config
+    enable_early_termination: bool = True  # Stop when regex satisfied at natural boundary
+
 
 # NOTE(dark): keep this for backward compatibility
 class LegacyStructuralTagResponseFormat(BaseModel):

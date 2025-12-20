@@ -983,6 +983,10 @@ class ConstraintSpec:
         if self.relaxation_threshold != 10:
             d["relaxation_threshold"] = self.relaxation_threshold
 
+        # Early termination (only include if disabled)
+        if not self.enable_early_termination:
+            d["enable_early_termination"] = self.enable_early_termination
+
         return d
 
     @classmethod
@@ -1056,6 +1060,8 @@ class ConstraintSpec:
             # Relaxation config
             allow_relaxation=d.get("allow_relaxation", True),
             relaxation_threshold=d.get("relaxation_threshold", 10),
+            # Early termination
+            enable_early_termination=d.get("enable_early_termination", True),
         )
 
     @classmethod

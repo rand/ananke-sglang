@@ -340,6 +340,10 @@ class AnankeBackend(BaseGrammarBackend):
         relaxation_threshold = (
             constraint_spec.relaxation_threshold if constraint_spec else 10
         )
+        # Extract early termination config
+        enable_early_termination = (
+            constraint_spec.enable_early_termination if constraint_spec else True
+        )
 
         return AnankeGrammar(
             syntax_grammar=syntax_grammar,
@@ -354,6 +358,7 @@ class AnankeBackend(BaseGrammarBackend):
             intensity=intensity,
             allow_relaxation=allow_relaxation,
             relaxation_threshold=relaxation_threshold,
+            enable_early_termination=enable_early_termination,
         )
 
     def _determine_intensity(
@@ -516,6 +521,7 @@ class AnankeBackend(BaseGrammarBackend):
             constraint_spec=spec,
             allow_relaxation=spec.allow_relaxation,
             relaxation_threshold=spec.relaxation_threshold,
+            enable_early_termination=spec.enable_early_termination,
         )
 
     def _resolve_language(self, spec: "ConstraintSpec") -> str:

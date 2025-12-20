@@ -366,6 +366,10 @@ class GenerationEvalRunner:
         spec["allow_relaxation"] = example.spec.allow_relaxation
         spec["relaxation_threshold"] = example.spec.relaxation_threshold
 
+        # Pass early termination config - critical for avoiding truncation
+        # on verbose examples like zig-comptime-002
+        spec["enable_early_termination"] = example.spec.enable_early_termination
+
         return spec
 
     def _validate_output(
