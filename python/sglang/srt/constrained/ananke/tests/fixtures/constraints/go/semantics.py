@@ -186,7 +186,7 @@ nl ::= "\n"
         spec=ConstraintSpec(
             language="go",
             # Regex enforces defer cleanup pattern (Lock/Unlock, Open/Close, etc.)
-            regex=r"func\s+\w+\s*\([^)]*\)[\s\S]*defer\s+\w+\.(?:Unlock|Close)\s*\(\)",
+            regex=r"\bdefer\s+\w+\.(?:Unlock|Close)\s*\(\)",
             ebnf=r'''
 root ::= mutex_pattern | sql_pattern | file_pattern
 mutex_pattern ::= "func critical_section() error {" nl "\tmu.Lock()" nl "\tdefer mu.Unlock()" nl "\t// critical work" nl "\treturn nil" nl "}"

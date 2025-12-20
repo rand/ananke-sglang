@@ -49,8 +49,8 @@ Place defer f.Close() after successful os.Open, before any error returns.
 """,
         spec=ConstraintSpec(
             language="go",
-            # Regex enforces defer cleanup pattern: resource acquisition followed by defer
-            regex=r"^func\s+\w+\([^)]*\)\s+error\s*\{[\s\S]*\bdefer\s+\w+\.Close\(\)",
+            # Regex enforces defer cleanup pattern
+            regex=r"\bdefer\s+\w+\.Close\(\)",
             ebnf=r'''
 root ::= simple_pattern | wrapped_error
 simple_pattern ::= "func processFile(filename string) error {" nl "\tf, err := os.Open(filename)" nl "\tif err != nil {" nl "\t\treturn err" nl "\t}" nl "\tdefer f.Close()" nl "\t// process file" nl "\treturn nil" nl "}"

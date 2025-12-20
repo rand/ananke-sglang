@@ -43,8 +43,8 @@ async def handle_request(request: Request) -> Response:
     """,
         spec=ConstraintSpec(
             language="python",
-            # Regex enforces await patterns (await x, async with, asyncio calls)
-            regex=r"(?:\w+\s*=\s*)?await\s+|^await\s+asyncio\.|^async\s+with\s+",
+            # Regex enforces await usage - must have 'await' keyword
+            regex=r"\bawait\s+\w+",
             control_flow=ControlFlowContext(
                 function_name="handle_request",
                 function_signature=FunctionSignature(
