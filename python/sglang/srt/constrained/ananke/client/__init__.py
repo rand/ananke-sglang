@@ -67,6 +67,8 @@ from typing import (
 from .http import (
     AsyncHttpTransport,
     HttpTransportError,
+    LoggingConfig,
+    RetryConfig,
     SyncHttpTransport,
 )
 from .models import (
@@ -90,6 +92,8 @@ __all__ = [
     "StreamChunk",
     "ConstraintBuilder",
     "HttpTransportError",
+    "RetryConfig",
+    "LoggingConfig",
 ]
 
 
@@ -121,6 +125,8 @@ class AnankeClient:
         default_config: Optional[GenerationConfig] = None,
         timeout: float = 60.0,
         headers: Optional[Dict[str, str]] = None,
+        retry_config: Optional[RetryConfig] = None,
+        logging_config: Optional[LoggingConfig] = None,
     ):
         """Initialize the Ananke client.
 
@@ -130,11 +136,15 @@ class AnankeClient:
             default_config: Default generation config
             timeout: Request timeout in seconds
             headers: Additional HTTP headers
+            retry_config: Retry configuration for transient failures
+            logging_config: Logging configuration for debugging
         """
         self.base_url = base_url
         self.model = model
         self.default_config = default_config or GenerationConfig()
-        self._transport = SyncHttpTransport(base_url, timeout, headers)
+        self._transport = SyncHttpTransport(
+            base_url, timeout, headers, retry_config, logging_config
+        )
 
     def generate(
         self,
@@ -340,6 +350,8 @@ class AnankeAsyncClient:
         default_config: Optional[GenerationConfig] = None,
         timeout: float = 60.0,
         headers: Optional[Dict[str, str]] = None,
+        retry_config: Optional[RetryConfig] = None,
+        logging_config: Optional[LoggingConfig] = None,
     ):
         """Initialize the async Ananke client.
 
@@ -349,11 +361,15 @@ class AnankeAsyncClient:
             default_config: Default generation config
             timeout: Request timeout in seconds
             headers: Additional HTTP headers
+            retry_config: Retry configuration for transient failures
+            logging_config: Logging configuration for debugging
         """
         self.base_url = base_url
         self.model = model
         self.default_config = default_config or GenerationConfig()
-        self._transport = AsyncHttpTransport(base_url, timeout, headers)
+        self._transport = AsyncHttpTransport(
+            base_url, timeout, headers, retry_config, logging_config
+        )
 
     async def generate(
         self,
