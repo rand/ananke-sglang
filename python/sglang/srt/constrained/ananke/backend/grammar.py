@@ -64,6 +64,13 @@ try:
     from ..masks.speculative import (
         SpeculativeMaskCache,
     )
+    from ..masks.relaxation import (
+        MaskRelaxation,
+        RelaxationPolicy,
+        RelaxationResult,
+        RelaxationAwareEvaluator,
+        compute_mask_with_relaxation,
+    )
 except ImportError:
     from core.checkpoint import (
         Checkpoint,
@@ -88,6 +95,13 @@ except ImportError:
     )
     from masks.speculative import (
         SpeculativeMaskCache,
+    )
+    from masks.relaxation import (
+        MaskRelaxation,
+        RelaxationPolicy,
+        RelaxationResult,
+        RelaxationAwareEvaluator,
+        compute_mask_with_relaxation,
     )
 
 if TYPE_CHECKING:
@@ -157,6 +171,9 @@ class AnankeGrammar(BaseGrammarObject):
         speculative_lookahead: int = 3,
         tiered_target_popcount: int = 100,
         parallel_workers: int = 4,
+        allow_relaxation: bool = True,
+        relaxation_threshold: int = 10,
+        enable_early_termination: bool = True,
     ):
         """Initialize AnankeGrammar.
 
@@ -184,6 +201,16 @@ class AnankeGrammar(BaseGrammarObject):
             speculative_lookahead: Number of tokens to precompute ahead.
             tiered_target_popcount: Target popcount for early termination in tiered mode.
             parallel_workers: Number of workers for parallel evaluation.
+            allow_relaxation: Enable progressive domain relaxation when masks
+                become too tight. When enabled, domains are tried in priority
+                order and skipped if applying them would drop popcount below
+                the relaxation threshold.
+            relaxation_threshold: Minimum popcount before relaxation triggers.
+                If a domain mask would reduce popcount below this value, that
+                domain is skipped (relaxed).
+            enable_early_termination: Enable early termination when regex
+                constraint is satisfied at a natural code boundary. This can
+                prevent generation from continuing past a valid completion.
         """
         super().__init__()
         self.syntax_grammar = syntax_grammar
@@ -262,6 +289,24 @@ class AnankeGrammar(BaseGrammarObject):
         # Initialize speculative cache if enabled
         if enable_speculative_cache and vocab_size > 0:
             self._speculative_cache = self._init_speculative_cache()
+
+        # Relaxation configuration
+        self._allow_relaxation = allow_relaxation
+        self._relaxation_threshold = relaxation_threshold
+        self._relaxation_policy = RelaxationPolicy(
+            enabled=allow_relaxation,
+            threshold=relaxation_threshold,
+        )
+        self._relaxation_evaluator: Optional[RelaxationAwareEvaluator] = None
+        self._last_relaxation_result: Optional[RelaxationResult] = None
+
+        # Initialize relaxation evaluator if enabled
+        if allow_relaxation:
+            self._relaxation_evaluator = self._init_relaxation_evaluator()
+
+        # Early termination configuration
+        self._enable_early_termination = enable_early_termination
+        self._early_termination_triggered = False
 
     def accept_token(self, token: int) -> None:
         """Accept a generated token, updating all domain constraints.
@@ -342,6 +387,23 @@ class AnankeGrammar(BaseGrammarObject):
         if self.constraint.satisfiability() == Satisfiability.UNSAT:
             logger.debug("Constraint became unsatisfiable, marking grammar finished")
             self.finished = True
+            return
+
+        # Check if regex constraint can still be satisfied
+        if self._check_regex_prefix_violation():
+            logger.debug("Output cannot satisfy regex constraint, marking grammar finished")
+            self.finished = True
+            return
+
+        # Check for early termination (regex satisfied at natural boundary)
+        if self._enable_early_termination and self._check_regex_satisfied():
+            if self._is_natural_boundary():
+                logger.info(
+                    f"Early termination: regex satisfied at natural boundary "
+                    f"(position={self.context.position}, text_len={len(self.context.generated_text)})"
+                )
+                self.finished = True
+                self._early_termination_triggered = True
 
     def rollback(self, k: int) -> None:
         """Roll back k tokens, restoring previous state.
@@ -420,6 +482,9 @@ class AnankeGrammar(BaseGrammarObject):
             idx: Index into the batch for this request
             use_lazy_evaluation: If True, use budget-limited lazy evaluation
         """
+        # Track mask popcount before syntax grammar
+        before_syntax = self._count_allowed_tokens(vocab_mask, idx) if logger.isEnabledFor(logging.DEBUG) else None
+
         # First, delegate to syntax grammar
         if self.syntax_grammar is not None:
             self.syntax_grammar.fill_vocab_mask(vocab_mask, idx)
@@ -427,10 +492,230 @@ class AnankeGrammar(BaseGrammarObject):
                 self.finished = True
                 return
 
+        # Log syntax mask effect
+        if before_syntax is not None:
+            after_syntax = self._count_allowed_tokens(vocab_mask, idx)
+            logger.debug(
+                f"Syntax grammar mask: {before_syntax} -> {after_syntax} tokens allowed"
+            )
+
         if use_lazy_evaluation:
             self._fill_vocab_mask_lazy(vocab_mask, idx)
         else:
             self._fill_vocab_mask_eager(vocab_mask, idx)
+
+    def _count_allowed_tokens(self, vocab_mask: torch.Tensor, idx: int) -> int:
+        """Count number of allowed tokens in the mask (for debugging)."""
+        try:
+            # Count set bits in the mask
+            mask_row = vocab_mask[idx]
+            return int(mask_row.sum().item() * 32)  # Approximate (each int32 has up to 32 bits)
+        except Exception:
+            return -1
+
+    def _check_regex_prefix_violation(self) -> bool:
+        """Check if current output can still possibly match the regex constraint.
+
+        Uses prefix matching to detect early when the generated text cannot
+        satisfy the regex, enabling early termination.
+
+        Returns:
+            True if the output definitely cannot match the regex (should terminate),
+            False if it might still be possible to match.
+        """
+        # Only check if we have a regex constraint and generated text
+        if self.constraint_spec is None or not self.constraint_spec.regex:
+            return False
+
+        generated_text = self.context.generated_text
+        if not generated_text:
+            return False
+
+        # Skip check for short outputs (not enough signal)
+        if len(generated_text) < 20:
+            return False
+
+        regex_pattern = self.constraint_spec.regex
+
+        # Quick check: if pattern is anchored, verify prefix
+        if regex_pattern.startswith("^"):
+            # Extract the non-regex prefix if possible
+            # For anchored patterns, first part should match
+            import re
+            try:
+                # Try to match what we have so far
+                # If pattern requires specific start and we don't have it, fail
+                partial_pattern = regex_pattern[:min(len(regex_pattern), 100)]
+
+                # Check if any prefix of our output matches the pattern prefix
+                for length in [len(generated_text), len(generated_text) // 2, 20]:
+                    prefix = generated_text[:length]
+                    if re.match(partial_pattern, prefix):
+                        return False  # Could still match
+
+                # If nothing matched and we have significant output, likely violated
+                if len(generated_text) > 100:
+                    logger.debug(
+                        f"Regex prefix violation: output '{generated_text[:50]}...' "
+                        f"doesn't match anchored pattern"
+                    )
+                    return True
+
+            except re.error:
+                pass  # Invalid regex, don't terminate
+
+        return False
+
+    def _check_regex_satisfied(self) -> bool:
+        """Check if the current output fully satisfies the regex constraint.
+
+        This is used for early termination: if the regex is already satisfied,
+        we can stop generation at a natural boundary instead of continuing.
+
+        Returns:
+            True if the output fully matches the regex constraint,
+            False otherwise.
+        """
+        # Only check if we have a regex constraint and generated text
+        if self.constraint_spec is None or not self.constraint_spec.regex:
+            return False
+
+        generated_text = self.context.generated_text
+        if not generated_text:
+            return False
+
+        # Need at least some output to consider satisfied
+        if len(generated_text) < 10:
+            return False
+
+        regex_pattern = self.constraint_spec.regex
+
+        import re
+        try:
+            # Check if the full pattern matches the generated text
+            # Use fullmatch for anchored patterns, search for unanchored
+            if regex_pattern.startswith("^") and regex_pattern.endswith("$"):
+                # Fully anchored pattern - must match entire string
+                match = re.fullmatch(regex_pattern, generated_text)
+            elif regex_pattern.startswith("^"):
+                # Start-anchored - match at beginning
+                match = re.match(regex_pattern, generated_text)
+            else:
+                # Unanchored - find anywhere in text
+                match = re.search(regex_pattern, generated_text)
+
+            if match:
+                logger.debug(
+                    f"Regex satisfied: pattern '{regex_pattern[:50]}...' matched at "
+                    f"position {match.start()}-{match.end()}"
+                )
+                return True
+
+        except re.error as e:
+            logger.warning(f"Invalid regex pattern: {e}")
+
+        return False
+
+    def _is_natural_boundary(self) -> bool:
+        """Check if the current position is a natural code boundary.
+
+        Natural boundaries are positions where it makes sense to stop generation,
+        such as after a complete statement, function definition, or block.
+
+        Returns:
+            True if at a natural boundary, False otherwise.
+        """
+        generated_text = self.context.generated_text
+        if not generated_text:
+            return False
+
+        # Strip trailing whitespace for boundary detection
+        text = generated_text.rstrip()
+        if not text:
+            return False
+
+        # Language-specific natural boundaries
+        # These are patterns where stopping makes sense
+        boundaries = {
+            "python": [
+                "\n\n",           # Blank line (end of block)
+                ":\n",            # End of header line
+                "\n    pass\n",   # Pass statement
+                "\nreturn ",      # Return statement start
+                "\n    return ",  # Indented return
+            ],
+            "rust": [
+                "}\n",            # End of block
+                ";\n",            # End of statement
+                "\n}\n",          # End of function/impl
+            ],
+            "go": [
+                "}\n",            # End of block
+                ";\n",            # End of statement (rare in Go)
+                "\n}\n",          # End of function
+            ],
+            "typescript": [
+                "}\n",            # End of block
+                ";\n",            # End of statement
+                "\n}\n",          # End of function/class
+            ],
+            "kotlin": [
+                "}\n",            # End of block
+                "\n}\n",          # End of function/class
+            ],
+            "swift": [
+                "}\n",            # End of block
+                "\n}\n",          # End of function/class
+            ],
+            "zig": [
+                "}\n",            # End of block
+                ";\n",            # End of statement
+                "\n}\n",          # End of function/block
+            ],
+        }
+
+        # Get boundaries for current language, with default fallback
+        lang_boundaries = boundaries.get(self.language, ["\n\n", "}\n", ";\n"])
+
+        # Check if text ends with any boundary pattern
+        for boundary in lang_boundaries:
+            # Handle both the text and boundary having trailing newlines
+            boundary_stripped = boundary.rstrip()
+            # Only check non-empty stripped boundaries (empty string matches everything)
+            if boundary_stripped and text.endswith(boundary_stripped):
+                return True
+
+        # Additional heuristic: check for complete-looking statements
+        # A line ending with certain patterns suggests completeness
+        last_line = text.split("\n")[-1] if "\n" in text else text
+        last_line_stripped = last_line.strip()  # Strip leading/trailing whitespace
+
+        # Endings that the line must END WITH
+        complete_endings = {
+            "python": [":", "pass"],
+            "rust": [";", "}", "),", ");"],
+            "go": ["}", ";"],
+            "typescript": [";", "}", "),", ");"],
+            "kotlin": ["}", "),", ");"],
+            "swift": ["}", "),", ");"],
+            "zig": [";", "}", "),", ");"],
+        }
+
+        lang_endings = complete_endings.get(self.language, [";", "}"])
+
+        for ending in lang_endings:
+            if last_line_stripped.endswith(ending):
+                return True
+
+        # Keywords that the line must START WITH (Python-specific)
+        # These are statement keywords that indicate a complete statement
+        if self.language == "python":
+            statement_keywords = ["return", "break", "continue", "raise"]
+            for keyword in statement_keywords:
+                if last_line_stripped.startswith(keyword):
+                    return True
+
+        return False
 
     def _fill_vocab_mask_eager(self, vocab_mask: torch.Tensor, idx: int) -> None:
         """Eagerly evaluate all domain masks (original behavior).
@@ -519,9 +804,181 @@ class AnankeGrammar(BaseGrammarObject):
                 else:
                     fused_mask &= domain_mask
 
-        # Apply the fused mask
+        # Apply the fused mask, optionally with relaxation
         if fused_mask is not None:
+            if self._allow_relaxation:
+                self._apply_domain_mask_with_relaxation(
+                    vocab_mask, idx, fused_mask, constraints
+                )
+            else:
+                self._apply_domain_mask(vocab_mask, idx, fused_mask)
+
+    def _apply_domain_mask_with_relaxation(
+        self,
+        vocab_mask: torch.Tensor,
+        idx: int,
+        fused_mask: torch.Tensor,
+        constraints: Dict[str, Any],
+    ) -> None:
+        """Apply domain mask with relaxation support.
+
+        If the fused mask would reduce the vocabulary mask popcount below
+        the relaxation threshold, individual domain masks are applied
+        progressively, skipping domains that would cause the popcount to
+        drop too low.
+
+        Args:
+            vocab_mask: Bitmask tensor to fill [batch_size, mask_size]
+            idx: Index into the batch for this request
+            fused_mask: Pre-computed fused mask from evaluation strategy
+            constraints: Dictionary of domain constraints being applied
+        """
+        # First, check if we can apply the full fused mask
+        candidate_popcount = self._count_candidate_popcount(vocab_mask, idx, fused_mask)
+
+        if candidate_popcount >= self._relaxation_threshold:
+            # Full mask is safe to apply
             self._apply_domain_mask(vocab_mask, idx, fused_mask)
+            self._last_relaxation_result = RelaxationResult(
+                fused_mask=fused_mask,
+                relaxation_level=MaskRelaxation.NONE,
+                domains_applied=list(constraints.keys()),
+                domains_relaxed=[],
+                final_popcount=candidate_popcount,
+                initial_popcount=self._count_allowed_tokens(vocab_mask, idx),
+            )
+            return
+
+        # Full fused mask would drop too low - apply domains progressively
+        logger.debug(
+            f"Full mask popcount ({candidate_popcount}) below threshold "
+            f"({self._relaxation_threshold}), applying progressive relaxation"
+        )
+
+        initial_popcount = self._count_allowed_tokens(vocab_mask, idx)
+        domains_applied: List[str] = []
+        domains_relaxed: List[str] = []
+        popcount_history: Dict[str, int] = {}
+
+        # Apply domains in priority order: types -> imports -> controlflow -> semantics
+        # This order ensures more critical domains are tried first
+        application_order = ["types", "imports", "controlflow", "semantics"]
+
+        for domain_name in application_order:
+            if domain_name not in constraints or domain_name not in self.domains:
+                continue
+
+            # Compute this domain's mask
+            domain = self.domains[domain_name]
+            domain_constraint = constraints[domain_name]
+            domain_mask = domain.token_mask(domain_constraint, self.context)
+
+            # Check candidate popcount
+            candidate_popcount = self._count_candidate_popcount(
+                vocab_mask, idx, domain_mask
+            )
+
+            if candidate_popcount >= self._relaxation_threshold:
+                # Safe to apply
+                self._apply_domain_mask(vocab_mask, idx, domain_mask)
+                domains_applied.append(domain_name)
+                popcount_history[domain_name] = candidate_popcount
+            else:
+                # Would drop below threshold - relax
+                domains_relaxed.append(domain_name)
+                popcount_history[f"{domain_name}_relaxed"] = candidate_popcount
+
+                if self._relaxation_policy.log_relaxation:
+                    logger.info(
+                        f"Relaxing domain '{domain_name}': popcount would drop "
+                        f"from {self._count_allowed_tokens(vocab_mask, idx)} to "
+                        f"{candidate_popcount} (threshold={self._relaxation_threshold})"
+                    )
+
+        # Determine final relaxation level
+        final_popcount = self._count_allowed_tokens(vocab_mask, idx)
+
+        if not domains_relaxed:
+            relaxation_level = MaskRelaxation.NONE
+        elif len(domains_applied) == 0:
+            relaxation_level = MaskRelaxation.SYNTAX_ONLY
+        else:
+            relaxation_level = MaskRelaxation.PARTIAL
+
+        # Store result for introspection
+        self._last_relaxation_result = RelaxationResult(
+            fused_mask=fused_mask,  # Original fused mask
+            relaxation_level=relaxation_level,
+            domains_applied=domains_applied,
+            domains_relaxed=domains_relaxed,
+            final_popcount=final_popcount,
+            initial_popcount=initial_popcount,
+            popcount_history=popcount_history,
+        )
+
+        if domains_relaxed:
+            logger.info(
+                f"Relaxation: applied={domains_applied}, relaxed={domains_relaxed}, "
+                f"final_popcount={final_popcount}"
+            )
+
+    def _count_candidate_popcount(
+        self,
+        vocab_mask: torch.Tensor,
+        idx: int,
+        domain_mask: torch.Tensor,
+    ) -> int:
+        """Count popcount if domain mask were applied (without modifying vocab_mask).
+
+        Args:
+            vocab_mask: Current bitmask tensor
+            idx: Batch index
+            domain_mask: Domain mask to test
+
+        Returns:
+            Popcount that would result from applying domain_mask
+        """
+        vocab_size = domain_mask.shape[0]
+        device = domain_mask.device
+        mask_size = vocab_mask.shape[1]
+
+        # Pad domain mask to multiple of 32
+        padded_size = ((vocab_size + 31) // 32) * 32
+        if vocab_size < padded_size:
+            padded = torch.zeros(padded_size, dtype=torch.bool, device=device)
+            padded[:vocab_size] = domain_mask
+        else:
+            padded = domain_mask
+
+        # Reshape to [num_words, 32] for bit packing
+        reshaped = padded.view(-1, 32)
+
+        # Get powers of 2 lookup table
+        if not hasattr(self, '_powers_of_2') or self._powers_of_2.device != device:
+            self._powers_of_2 = (2 ** torch.arange(32, device=device, dtype=torch.int64))
+
+        # Pack domain mask to int32
+        packed_domain = (reshaped.to(torch.int64) * self._powers_of_2).sum(dim=1).to(torch.int32)
+
+        # Compute hypothetical AND result
+        num_words = min(packed_domain.shape[0], mask_size)
+        candidate = vocab_mask[idx, :num_words] & packed_domain[:num_words]
+
+        # Count set bits using lookup table (more efficient than Python loop)
+        # Convert int32 tensor to individual bits and sum
+        # Unpack to uint8 and use precomputed popcount lookup
+        if not hasattr(self, '_popcount_lut'):
+            # Precompute popcount lookup table for bytes
+            self._popcount_lut = torch.tensor(
+                [bin(i).count('1') for i in range(256)],
+                dtype=torch.int32,
+                device=device,
+            )
+
+        candidate_bytes = candidate.view(torch.uint8)
+        popcount = self._popcount_lut[candidate_bytes.long()].sum().item()
+
+        return int(popcount)
 
     def allocate_vocab_mask(
         self, vocab_size: int, batch_size: int, device
@@ -543,9 +1000,11 @@ class AnankeGrammar(BaseGrammarObject):
             return self.syntax_grammar.allocate_vocab_mask(vocab_size, batch_size, device)
 
         # Fallback: allocate standard bitmask (int32, 32 tokens per element)
+        # Initialize to all 1s (all tokens allowed) so domain constraints can restrict
+        # Using -1 for signed int32 sets all bits to 1
         mask_size = (vocab_size + 31) // 32
-        return torch.zeros(
-            (batch_size, mask_size), dtype=torch.int32, device=device
+        return torch.full(
+            (batch_size, mask_size), fill_value=-1, dtype=torch.int32, device=device
         )
 
     @staticmethod
@@ -602,6 +1061,14 @@ class AnankeGrammar(BaseGrammarObject):
             mask_pool_size=self._mask_pool_size,
             constraint_spec=self.constraint_spec,
             intensity=self.intensity,
+            evaluation_strategy=self._evaluation_strategy,
+            enable_speculative_cache=self._enable_speculative_cache,
+            speculative_lookahead=self._speculative_lookahead,
+            tiered_target_popcount=self._tiered_target_popcount,
+            parallel_workers=self._parallel_workers,
+            allow_relaxation=self._allow_relaxation,
+            relaxation_threshold=self._relaxation_threshold,
+            enable_early_termination=self._enable_early_termination,
         )
 
     def inject_context(self, spec: "ConstraintSpec") -> None:
@@ -976,6 +1443,33 @@ class AnankeGrammar(BaseGrammarObject):
 
         return evaluator
 
+    def _init_relaxation_evaluator(self) -> RelaxationAwareEvaluator:
+        """Initialize relaxation-aware constraint evaluator.
+
+        Creates an evaluator that applies domain constraints progressively
+        with relaxation support. When applying a domain mask would reduce
+        the popcount below the threshold, that domain is skipped (relaxed).
+
+        Relaxation order (most dispensable first):
+        - semantics: Expensive, often redundant with other domains
+        - controlflow: Can be violated gracefully
+        - imports: Least critical
+        - types: Usually important but can relax as last resort
+
+        Syntax is NEVER relaxed.
+
+        Returns:
+            Configured RelaxationAwareEvaluator
+        """
+        evaluator = RelaxationAwareEvaluator(policy=self._relaxation_policy)
+
+        # Register all non-syntax domains
+        for domain_name, domain in self.domains.items():
+            if domain_name != "syntax":  # Syntax handled separately, never relaxed
+                evaluator.register(domain_name, domain.token_mask)
+
+        return evaluator
+
     def _init_speculative_cache(self) -> SpeculativeMaskCache:
         """Initialize speculative mask cache.
 
@@ -1033,6 +1527,60 @@ class AnankeGrammar(BaseGrammarObject):
             "cache_size": cache_size,
             "domains_cached": list(self._domain_mask_cache.keys()),
         }
+
+    def get_constraint_status(self) -> Dict[str, Any]:
+        """Get diagnostic information about which constraints are active.
+
+        Returns a dictionary with:
+        - domains_registered: List of registered domain names
+        - constraints_active: Dict mapping domain name to whether constraint is non-TOP
+        - constraint_details: Details about each constraint
+        - spec_summary: Summary of constraint_spec if present
+
+        Returns:
+            Dictionary of constraint status information
+        """
+        status: Dict[str, Any] = {
+            "domains_registered": list(self.domains.keys()),
+            "constraints_active": {},
+            "constraint_details": {},
+        }
+
+        # Check each domain's constraint status
+        for domain_name in self.domains:
+            if domain_name == "syntax":
+                # Syntax is handled separately
+                status["constraints_active"][domain_name] = (
+                    self.syntax_grammar is not None
+                )
+                continue
+
+            domain_constraint = getattr(self.constraint, domain_name, None)
+            if domain_constraint is not None:
+                is_active = not domain_constraint.is_top()
+                status["constraints_active"][domain_name] = is_active
+                status["constraint_details"][domain_name] = {
+                    "is_top": domain_constraint.is_top(),
+                    "repr": repr(domain_constraint)[:100],
+                }
+
+        # Add spec summary if available
+        if self.constraint_spec is not None:
+            spec = self.constraint_spec
+            status["spec_summary"] = {
+                "language": spec.language,
+                "has_regex": spec.regex is not None,
+                "has_ebnf": spec.ebnf is not None,
+                "has_json_schema": spec.json_schema is not None,
+                "has_expected_type": spec.expected_type is not None,
+                "type_bindings_count": len(spec.type_bindings),
+                "forbidden_imports_count": (
+                    len(spec.forbidden_imports) if spec.forbidden_imports else 0
+                ),
+                "function_signatures_count": len(spec.function_signatures),
+            }
+
+        return status
 
     def get_evaluator_stats(self) -> Dict[str, Any]:
         """Get evaluator statistics based on current strategy.

@@ -1473,13 +1473,46 @@ class Scheduler(
                         if not cache_hit:
                             # Store spec for grammar compilation
                             req.constraint_spec = spec
+                            # Compute grammar_key for cache storage after compilation
+                            cache_key_str = spec.compute_cache_key()
+                            constraint_type = spec.get_syntax_constraint_type() or "constraint_spec"
+                            req.grammar_key = (constraint_type, cache_key_str)
                             add_to_grammar_queue = True
                         else:
                             if value is INVALID_GRAMMAR_OBJ:
                                 error_msg = f"Invalid constraint_spec grammar request"
                                 req.set_finish_with_abort(error_msg)
-                    except ImportError:
-                        # Fall back to legacy dispatch if ananke not available
+                    except ImportError as e:
+                        logger.warning(f"Ananke not available for constraint_spec, falling back to legacy: {e}")
+                        # Fall back to legacy dispatch
+                        spec_dict = req.sampling_params.constraint_spec
+                        if spec_dict.get("json_schema"):
+                            key = ("json", spec_dict.get("json_schema"))
+                        elif spec_dict.get("regex"):
+                            key = ("regex", spec_dict.get("regex"))
+                        elif spec_dict.get("ebnf"):
+                            key = ("ebnf", spec_dict.get("ebnf"))
+                        else:
+                            import json
+
+                            key = ("constraint_spec", json.dumps(spec_dict, sort_keys=True))
+                        value, cache_hit = self.grammar_backend.get_cached_or_future_value(
+                            key, req.require_reasoning
+                        )
+                        req.grammar = value
+                        if not cache_hit:
+                            req.grammar_key = key
+                            add_to_grammar_queue = True
+                        else:
+                            if value is INVALID_GRAMMAR_OBJ:
+                                error_msg = f"Invalid grammar request with cache hit: {key=}"
+                                req.set_finish_with_abort(error_msg)
+                    except Exception as e:
+                        # Log the error and fall back to legacy dispatch
+                        logger.warning(f"constraint_spec dispatch failed, falling back to legacy: {e}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
+                        # Fall back to legacy dispatch
                         spec_dict = req.sampling_params.constraint_spec
                         if spec_dict.get("json_schema"):
                             key = ("json", spec_dict.get("json_schema"))
@@ -2246,10 +2279,17 @@ class Scheduler(
                     continue
 
                 req.grammar = req.grammar.result(timeout=0.03)
-                self.grammar_backend.set_cache(req.grammar_key, req.grammar.copy())
-                if req.grammar is INVALID_GRAMMAR_OBJ:
+                # Handle None grammar (constraint_spec with no actual constraints)
+                if req.grammar is None:
+                    # No grammar needed - request proceeds unconstrained
+                    # Don't cache None, just proceed
+                    pass
+                elif req.grammar is INVALID_GRAMMAR_OBJ:
                     error_msg = f"Invalid grammar request: {req.grammar_key=}"
                     req.set_finish_with_abort(error_msg)
+                else:
+                    # Valid grammar - cache it
+                    self.grammar_backend.set_cache(req.grammar_key, req.grammar.copy())
 
                 num_ready_reqs += 1
             except futures._base.TimeoutError:
@@ -2280,10 +2320,16 @@ class Scheduler(
                 if req.finished():  # It is aborted by AbortReq
                     continue
                 req.grammar = req.grammar.result()
-                self.grammar_backend.set_cache(req.grammar_key, req.grammar.copy())
-                if req.grammar is INVALID_GRAMMAR_OBJ:
+                # Handle None grammar (constraint_spec with no actual constraints)
+                if req.grammar is None:
+                    # No grammar needed - request proceeds unconstrained
+                    pass
+                elif req.grammar is INVALID_GRAMMAR_OBJ:
                     error_msg = f"Invalid grammar request: {req.grammar_key=}"
                     req.set_finish_with_abort(error_msg)
+                else:
+                    # Valid grammar - cache it
+                    self.grammar_backend.set_cache(req.grammar_key, req.grammar.copy())
         else:
             num_ready_reqs_max = num_ready_reqs
             num_timeout_reqs_max = num_timeout_reqs
