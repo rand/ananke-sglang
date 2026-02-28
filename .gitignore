@@ -270,3 +270,7 @@ sgl-kernel/csrc/**/*_musa/
 
 # MUSA core dump files
 *.mudmp
+
+# Eval results (ephemeral)
+layered_eval_results_*.json
+eval_results/

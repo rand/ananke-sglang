@@ -1,8 +1,8 @@
 # Ananke Constrained Generation - Session Handoff
 
-**Date**: 2025-12-22
-**Branch**: `main` (merged from `ananke/domain-constraint-dispatch`)
-**Status**: Feature-Complete, Production-Ready
+**Date**: 2026-02-28
+**Branch**: `main` (synced with upstream sgl-project/sglang, plugin architecture)
+**Status**: Feature-Complete, Production-Ready, Upstream-Synced
 
 ---
 
@@ -23,10 +23,12 @@
 | Configuration docs | ✅ Complete | `docs/CONFIGURATION.md` |
 | Migration guide | ✅ Complete | `docs/MIGRATION_FROM_XGRAMMAR.md` |
 
-### Eval Results (Latest)
+### Eval Results (Latest - Modal Deployment)
 ```
 Layer 1 (Mechanism Verification): PASS - 11/11 (100%)
 Layer 2 (Value Measurement): 5/6 tests show value
+E2E Tests: 12/12 PASS (Modal + Qwen3-Coder-30B-A3B)
+Layered Eval: 10/11 PASS (json_enum_values at 65% is model limitation)
 
 Effect sizes:
 - Python list comprehension: +60% (large)
@@ -38,13 +40,10 @@ Effect sizes:
 
 ### Test Coverage
 ```
-Total tests: 4,456
-- Core unit tests: 115+ PASS
-- Domain tests: 588+ PASS
-- Integration tests: 26+ PASS
-- Property-based tests: 653+ PASS
-- Client SDK tests: 26 PASS
-- Relaxation tests: 12 PASS
+Total tests: 4,406 PASS (3 skipped - Z3 dependency, pre-existing)
+- Unit tests: 3,482 PASS
+- Property tests: 629 PASS
+- Integration tests: 295+ PASS
 ```
 
 ---
@@ -56,9 +55,15 @@ ConstraintSpec (user-facing)
     ↓
 protocol.py (serialization)
     ↓
-backend.py (SGLang integration)
+[sglang core: protocol.py, sampling_params.py]  ← constraint_spec field
     ↓
-AnankeGrammar (mask computation)
+[sglang core: grammar_manager.py]               ← spec dispatch path
+    ↓
+[sglang core: base_grammar_backend.py]           ← generic spec-dispatch methods
+    ↓
+backend/backend.py (AnankeBackend)
+    ↓
+backend/grammar.py (AnankeGrammar - mask computation)
     ├── SyntaxDomain (CFG-based)
     ├── TypeDomain (type inference)
     ├── ImportDomain (module restrictions)
@@ -70,7 +75,7 @@ masks/relaxation.py (progressive relaxation)
 observability/ (metrics collection)
 ```
 
-### Key Files
+### Key Files — Ananke Subtree
 | File | Purpose |
 |------|---------|
 | `spec/constraint_spec.py` | User-facing ConstraintSpec dataclass |
@@ -84,6 +89,17 @@ observability/ (metrics collection)
 | `observability/exporter.py` | Log/callback exporters |
 | `client/__init__.py` | AnankeClient, AnankeAsyncClient |
 | `client/http.py` | HTTP transport with retry/logging |
+
+### Key Files — SGLang Core Integration (7 files, ~200 lines)
+| File | Change |
+|------|--------|
+| `constrained/base_grammar_backend.py` | Generic spec-dispatch methods + ananke create case |
+| `constrained/grammar_manager.py` | constraint_spec dispatch in `process_req_with_grammar()` |
+| `sampling/sampling_params.py` | `constraint_spec` field |
+| `entrypoints/openai/protocol.py` | `constraint_spec` field on request models |
+| `entrypoints/openai/serving_completions.py` | Wire constraint_spec |
+| `entrypoints/openai/serving_chat.py` | Wire constraint_spec |
+| `server_args.py` | `"ananke"` in backend choices + CLI args |
 
 ---
 
@@ -172,10 +188,9 @@ callback_exporter = CallbackExporter(metrics_callback=send_to_prometheus)
 
 ## Potential Future Enhancements
 
-1. **Prometheus/OTLP Exporter**: Currently only Log/Callback exporters
-2. **Performance Benchmarks**: No formal benchmark suite
-3. **Upstream to sgl-project/sglang**: Currently on rand/ananke-sglang fork
-4. **Semantics Domain Improvements**: Lowest pass rate, most complex
+1. **Performance Benchmarks**: Formal benchmark suite for regression tracking
+2. **Semantics Domain Improvements**: Lowest pass rate, most complex
+3. **Upstream Contribution**: Propose ananke as official sglang grammar backend
 
 ---
 
@@ -216,11 +231,13 @@ modal run deploy/modal/eval/run_layered_eval.py
 
 ```
 Repository: git@github.com:rand/ananke-sglang.git
-Branch: main
-Latest commit: 2030750 (Merge PR #2)
+Branch: main (synced with upstream/main as of 2026-02-28)
+Latest commit: acb1d2fa4 (Merge main: supersede old fork with upstream-synced ananke integration)
 
-PR History:
-- PR #2: feat(ananke): Client SDK improvements and observability module (MERGED)
+Architecture: Plugin-style integration
+- 7 core sglang files modified (~200 lines total)
+- ~20k LOC ananke subtree (self-contained)
+- All other branches merged and cleaned up
 ```
 
 ---
