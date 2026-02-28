@@ -67,15 +67,20 @@ class GrammarManager:
     def process_req_with_grammar(self, req: Req) -> bool:
         # Init grammar cache for this request
         add_to_grammar_queue = False
-        if (
+        has_constraint = (
             req.sampling_params.json_schema is not None
             or req.sampling_params.regex is not None
             or req.sampling_params.ebnf is not None
             or req.sampling_params.structural_tag is not None
-        ):
+            or getattr(req.sampling_params, "constraint_spec", None) is not None
+        )
+        if has_constraint:
             if self.grammar_backend is None:
-                error_msg = "Grammar-based generation (json_schema, regex, ebnf, structural_tag) is not supported when the server is launched with --grammar-backend none"
+                error_msg = "Grammar-based generation (json_schema, regex, ebnf, structural_tag, constraint_spec) is not supported when the server is launched with --grammar-backend none"
                 req.set_finish_with_abort(error_msg)
+            elif getattr(req.sampling_params, "constraint_spec", None) is not None:
+                # constraint_spec dispatch path (priority over legacy)
+                add_to_grammar_queue = self._dispatch_constraint_spec(req)
             else:
                 if req.sampling_params.json_schema is not None:
                     key = ("json", req.sampling_params.json_schema)
@@ -103,6 +108,60 @@ class GrammarManager:
             self.grammar_queue.append(req)
 
         return add_to_grammar_queue
+
+    def _dispatch_constraint_spec(self, req: Req) -> bool:
+        """Dispatch a request using its constraint_spec."""
+        import json
+
+        spec_dict = req.sampling_params.constraint_spec
+        try:
+            from sglang.srt.constrained.ananke.spec.constraint_spec import (
+                ConstraintSpec,
+            )
+
+            spec = ConstraintSpec.from_dict(spec_dict)
+            value, cache_hit = self.grammar_backend.get_cached_or_future_with_spec(
+                spec, req.require_reasoning
+            )
+            req.grammar = value
+            if not cache_hit:
+                cache_key_str = spec.compute_cache_key()
+                constraint_type = (
+                    spec.get_syntax_constraint_type() or "constraint_spec"
+                )
+                req.grammar_key = (constraint_type, cache_key_str)
+                return True
+            else:
+                if value is INVALID_GRAMMAR_OBJ:
+                    req.set_finish_with_abort(
+                        "Invalid constraint_spec grammar request"
+                    )
+        except ImportError as e:
+            logger.warning(
+                f"Ananke not available for constraint_spec, falling back to legacy: {e}"
+            )
+            # Fall back to legacy dispatch using spec dict fields
+            if spec_dict.get("json_schema"):
+                key = ("json", spec_dict["json_schema"])
+            elif spec_dict.get("regex"):
+                key = ("regex", spec_dict["regex"])
+            elif spec_dict.get("ebnf"):
+                key = ("ebnf", spec_dict["ebnf"])
+            else:
+                key = ("constraint_spec", json.dumps(spec_dict, sort_keys=True))
+
+            value, cache_hit = self.grammar_backend.get_cached_or_future_value(
+                key, req.require_reasoning
+            )
+            req.grammar = value
+            if not cache_hit:
+                req.grammar_key = key
+                return True
+            else:
+                if value is INVALID_GRAMMAR_OBJ:
+                    error_msg = f"Invalid grammar request with cache hit: {key=}"
+                    req.set_finish_with_abort(error_msg)
+        return False
 
     def get_ready_grammar_requests(self) -> List[Req]:
         """
@@ -171,7 +230,8 @@ class GrammarManager:
                 continue
 
             req.grammar = req.grammar.result()
-            self.grammar_backend.set_cache(req.grammar_key, req.grammar.copy())
+            if req.grammar is not None and req.grammar is not INVALID_GRAMMAR_OBJ:
+                self.grammar_backend.set_cache(req.grammar_key, req.grammar.copy())
             if req.grammar is INVALID_GRAMMAR_OBJ:
                 error_msg = f"Invalid grammar request: {req.grammar_key=}"
                 req.set_finish_with_abort(error_msg)
