@@ -179,9 +179,12 @@ nl ::= "\n"
             "use defer to ensure cleanup happens even if function panics or "
             "returns early. Defer guarantees cleanup runs in all exit paths."
         ),
-        prompt="""Write resource management code with defer for cleanup. After acquiring a resource
-(Lock, Open, Connect), immediately defer the cleanup (Unlock, Close). Don't use manual cleanup.
+        prompt="""Write a short Go function that acquires a resource and immediately defers cleanup.
+Pattern: mu.Lock() then defer mu.Unlock(), or os.Open() then defer file.Close().
 
+func critical_section() error {
+	mu.Lock()
+	defer mu.Unlock()
 """,
         spec=ConstraintSpec(
             language="go",

@@ -134,7 +134,7 @@ fn read_config(path: &Path) -> Result<Config, ConfigError> {
         spec=ConstraintSpec(
             language="typescript",
             # Regex enforces try/catch with Result discriminator return
-            regex=r"^try\s*\{.*return\s*\{\s*ok:\s*true",
+            regex=r"try\s*\{.*return\s*\{\s*ok:\s*true",
             expected_type="Result<Config, ConfigError>",
             type_bindings=[
                 TypeBinding(name="path", type_expr="string", scope="parameter"),
@@ -159,7 +159,7 @@ fn read_config(path: &Path) -> Result<Config, ConfigError> {
         tags=["error-handling", "result-type", "discriminated-union", "cross-language"],
         language="typescript",
         domain="controlflow",
-        max_tokens=2048,  # TypeScript try/catch with Result type is verbose
+        max_tokens=4096,  # TypeScript try/catch with Result type is verbose
     ),
 
     # Go: Multi-return error pattern

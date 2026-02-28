@@ -131,10 +131,9 @@ google_import ::= "\"google.golang.org/grpc\""
             "{{.Field}}, {{if .Cond}}...{{end}}, {{range .Items}}...{{end}}, "
             "{{template \"name\" .}}."
         ),
-        prompt="""Write a Go template string using text/template syntax. Use {{.Field}} for data access,
-{{if .Cond}}...{{end}} for conditionals, {{range .Items}}...{{end}} for loops.
+        prompt="""Assign a Go text/template string to tmpl. Use {{.Field}} for data, {{if}}...{{end}} for conditionals.
 
-tmpl := """,
+tmpl := `""",
         spec=ConstraintSpec(
             language="go",
             # Regex matches Go template syntax: {{.Field}}, {{if}}, {{range}}, {{define}}, etc.

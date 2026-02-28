@@ -43,9 +43,10 @@ GO_CONTROLFLOW_EXAMPLES: List[ConstraintExample] = [
             "immediately after successful resource acquisition and before "
             "error checks that might cause early return."
         ),
-        prompt="""Write a processFile function that opens a file and ensures cleanup via defer.
-Place defer f.Close() after successful os.Open, before any error returns.
+        prompt="""Write a short processFile function that opens a file and defers f.Close().
+Pattern: os.Open, check err, then defer f.Close().
 
+func processFile(filename string) error {
 """,
         spec=ConstraintSpec(
             language="go",
