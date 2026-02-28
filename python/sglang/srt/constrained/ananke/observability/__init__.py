@@ -27,7 +27,13 @@ from .metrics import (
     RelaxationEventMetrics,
     RequestMetrics,
 )
-from .exporter import MetricsExporter, LogExporter, CallbackExporter
+from .exporter import (
+    MetricsExporter,
+    LogExporter,
+    CallbackExporter,
+    PrometheusExporter,
+    OTLPExporter,
+)
 
 __all__ = [
     "MetricsCollector",
@@ -38,4 +44,6 @@ __all__ = [
     "MetricsExporter",
     "LogExporter",
     "CallbackExporter",
+    "PrometheusExporter",
+    "OTLPExporter",
 ]

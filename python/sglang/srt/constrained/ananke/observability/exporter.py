@@ -130,6 +130,292 @@ class CallbackExporter(MetricsExporter):
                 logger.warning(f"Alert callback error: {e}")
 
 
+class PrometheusExporter(MetricsExporter):
+    """Export metrics to Prometheus.
+
+    Supports both pull mode (HTTP endpoint) and push mode (Pushgateway).
+    Requires the ``prometheus_client`` package (optional dependency).
+
+    Attributes:
+        namespace: Metric name prefix (default: "ananke")
+        push_gateway: Optional Pushgateway URL for push mode
+        job_name: Job name for Pushgateway (default: "ananke")
+    """
+
+    def __init__(
+        self,
+        namespace: str = "ananke",
+        push_gateway: Optional[str] = None,
+        job_name: str = "ananke",
+    ) -> None:
+        try:
+            import prometheus_client
+        except ImportError:
+            raise ImportError(
+                "prometheus_client is required for PrometheusExporter. "
+                "Install with: pip install prometheus-client"
+            )
+
+        self._pc = prometheus_client
+        self.namespace = namespace
+        self.push_gateway = push_gateway
+        self.job_name = job_name
+
+        self._registry = prometheus_client.CollectorRegistry()
+        self._build_metrics()
+
+    def _build_metrics(self) -> None:
+        pc = self._pc
+        ns = self.namespace
+        reg = self._registry
+
+        self._mask_count = pc.Counter(
+            f"{ns}_mask_applications_total",
+            "Total mask applications",
+            registry=reg,
+        )
+        self._mask_popcount = pc.Gauge(
+            f"{ns}_mask_popcount_mean",
+            "Mean popcount of masks",
+            registry=reg,
+        )
+        self._mask_selectivity = pc.Gauge(
+            f"{ns}_mask_selectivity",
+            "Mean mask selectivity (1 - popcount/vocab_size)",
+            registry=reg,
+        )
+        self._mask_p99 = pc.Gauge(
+            f"{ns}_mask_popcount_p99",
+            "99th percentile mask popcount",
+            registry=reg,
+        )
+        self._domain_latency = pc.Gauge(
+            f"{ns}_domain_latency_mean_ms",
+            "Mean domain latency in milliseconds",
+            ["domain"],
+            registry=reg,
+        )
+        self._domain_latency_p99 = pc.Gauge(
+            f"{ns}_domain_latency_p99_ms",
+            "P99 domain latency in milliseconds",
+            ["domain"],
+            registry=reg,
+        )
+        self._relaxation_total = pc.Counter(
+            f"{ns}_relaxation_events_total",
+            "Total constraint relaxation events",
+            registry=reg,
+        )
+        self._relaxation_by_domain = pc.Counter(
+            f"{ns}_relaxation_events_by_domain",
+            "Relaxation events by domain",
+            ["domain"],
+            registry=reg,
+        )
+        self._active_requests = pc.Gauge(
+            f"{ns}_active_requests",
+            "Currently active requests",
+            registry=reg,
+        )
+        self._completed_requests = pc.Counter(
+            f"{ns}_completed_requests_total",
+            "Total completed requests",
+            registry=reg,
+        )
+
+    def export(self, collector: MetricsCollector) -> None:
+        summary = collector.get_summary()
+
+        mask = summary.get("mask_metrics", {})
+        count = mask.get("count", 0)
+        if count > 0:
+            self._mask_count._value.set(count)
+            self._mask_popcount.set(mask.get("mean", 0))
+            self._mask_selectivity.set(mask.get("mean_selectivity", 0))
+            self._mask_p99.set(mask.get("p99", 0))
+
+        for domain, metrics in summary.get("domain_latencies", {}).items():
+            self._domain_latency.labels(domain=domain).set(
+                metrics.get("mean_ms", 0)
+            )
+            self._domain_latency_p99.labels(domain=domain).set(
+                metrics.get("p99_ms", 0)
+            )
+
+        relaxation = summary.get("relaxation", {})
+        total_events = relaxation.get("total_events", 0)
+        if total_events > 0:
+            self._relaxation_total._value.set(total_events)
+            for domain, count in relaxation.get("events_by_domain", {}).items():
+                self._relaxation_by_domain.labels(domain=domain)._value.set(count)
+
+        self._active_requests.set(summary.get("active_requests", 0))
+        self._completed_requests._value.set(summary.get("completed_requests", 0))
+
+        if self.push_gateway:
+            try:
+                self._pc.push_to_gateway(
+                    self.push_gateway,
+                    job=self.job_name,
+                    registry=self._registry,
+                )
+            except Exception as e:
+                logger.warning(f"Prometheus push failed: {e}")
+
+    def export_alert(self, alert_type: str, data: Dict[str, Any]) -> None:
+        # Prometheus doesn't have a native alert export mechanism.
+        # Alerts are typically derived from metric thresholds in Alertmanager.
+        logger.debug(f"Prometheus alert (use Alertmanager rules): {alert_type}: {data}")
+
+    @property
+    def registry(self) -> Any:
+        """Access the Prometheus registry for custom HTTP server setup."""
+        return self._registry
+
+
+class OTLPExporter(MetricsExporter):
+    """Export metrics via OpenTelemetry Protocol (OTLP).
+
+    Supports gRPC and HTTP exporters. Requires the ``opentelemetry-sdk``
+    and ``opentelemetry-exporter-otlp`` packages (optional dependencies).
+
+    Attributes:
+        service_name: Service name in OTLP resource (default: "ananke")
+        endpoint: OTLP endpoint URL (default: "http://localhost:4317")
+        protocol: Transport protocol - "grpc" or "http" (default: "grpc")
+        insecure: Use insecure connection for gRPC (default: True)
+    """
+
+    def __init__(
+        self,
+        service_name: str = "ananke",
+        endpoint: str = "http://localhost:4317",
+        protocol: str = "grpc",
+        insecure: bool = True,
+    ) -> None:
+        try:
+            from opentelemetry import metrics as otel_metrics
+            from opentelemetry.sdk.metrics import MeterProvider
+            from opentelemetry.sdk.resources import Resource
+        except ImportError:
+            raise ImportError(
+                "opentelemetry-sdk is required for OTLPExporter. "
+                "Install with: pip install opentelemetry-sdk opentelemetry-exporter-otlp"
+            )
+
+        self.service_name = service_name
+        self.endpoint = endpoint
+        self.protocol = protocol
+
+        resource = Resource.create({"service.name": service_name})
+
+        if protocol == "grpc":
+            try:
+                from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+                    OTLPMetricExporter,
+                )
+            except ImportError:
+                raise ImportError(
+                    "opentelemetry-exporter-otlp-proto-grpc is required for gRPC protocol. "
+                    "Install with: pip install opentelemetry-exporter-otlp-proto-grpc"
+                )
+            otlp_exporter = OTLPMetricExporter(
+                endpoint=endpoint, insecure=insecure
+            )
+        else:
+            try:
+                from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+                    OTLPMetricExporter,
+                )
+            except ImportError:
+                raise ImportError(
+                    "opentelemetry-exporter-otlp-proto-http is required for HTTP protocol. "
+                    "Install with: pip install opentelemetry-exporter-otlp-proto-http"
+                )
+            otlp_exporter = OTLPMetricExporter(endpoint=endpoint)
+
+        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+
+        reader = PeriodicExportingMetricReader(
+            otlp_exporter, export_interval_millis=60000
+        )
+        self._provider = MeterProvider(resource=resource, metric_readers=[reader])
+        self._meter = self._provider.get_meter("ananke.observability")
+
+        self._build_instruments()
+        self._last_mask_count = 0
+        self._last_relaxation_total = 0
+        self._last_completed = 0
+
+    def _build_instruments(self) -> None:
+        self._mask_counter = self._meter.create_counter(
+            "ananke.mask_applications",
+            description="Total mask applications",
+        )
+        self._mask_popcount_hist = self._meter.create_histogram(
+            "ananke.mask_popcount",
+            description="Mask popcount distribution",
+            unit="tokens",
+        )
+        self._mask_selectivity_gauge = self._meter.create_gauge(
+            "ananke.mask_selectivity",
+            description="Mean mask selectivity",
+        )
+        self._domain_latency_hist = self._meter.create_histogram(
+            "ananke.domain_latency",
+            description="Per-domain latency",
+            unit="ms",
+        )
+        self._relaxation_counter = self._meter.create_counter(
+            "ananke.relaxation_events",
+            description="Total relaxation events",
+        )
+        self._active_gauge = self._meter.create_gauge(
+            "ananke.active_requests",
+            description="Currently active requests",
+        )
+
+    def export(self, collector: MetricsCollector) -> None:
+        summary = collector.get_summary()
+
+        mask = summary.get("mask_metrics", {})
+        current_count = mask.get("count", 0)
+        delta = current_count - self._last_mask_count
+        if delta > 0:
+            self._mask_counter.add(delta)
+            self._last_mask_count = current_count
+
+        mean_popcount = mask.get("mean", 0)
+        if mean_popcount > 0:
+            self._mask_popcount_hist.record(mean_popcount)
+        self._mask_selectivity_gauge.set(mask.get("mean_selectivity", 0))
+
+        for domain, metrics in summary.get("domain_latencies", {}).items():
+            mean_ms = metrics.get("mean_ms", 0)
+            if mean_ms > 0:
+                self._domain_latency_hist.record(
+                    mean_ms, {"domain": domain}
+                )
+
+        relaxation = summary.get("relaxation", {})
+        relax_total = relaxation.get("total_events", 0)
+        relax_delta = relax_total - self._last_relaxation_total
+        if relax_delta > 0:
+            self._relaxation_counter.add(relax_delta)
+            self._last_relaxation_total = relax_total
+
+        self._active_gauge.set(summary.get("active_requests", 0))
+
+    def export_alert(self, alert_type: str, data: Dict[str, Any]) -> None:
+        # OTLP alerts are typically handled via traces/logs, not metrics.
+        # Record as a metric event with attributes for now.
+        logger.debug(f"OTLP alert (consider traces/logs pipeline): {alert_type}: {data}")
+
+    def shutdown(self) -> None:
+        """Shut down the OTLP provider, flushing pending metrics."""
+        self._provider.shutdown()
+
+
 class PeriodicExporter:
     """Periodically export metrics from a collector.
 
