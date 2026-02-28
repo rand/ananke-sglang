@@ -18,11 +18,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from threading import Event
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import torch
 
 from sglang.srt.server_args import ServerArgs
+
+if TYPE_CHECKING:
+    from sglang.srt.constrained.ananke.spec.constraint_spec import ConstraintSpec
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +82,15 @@ class BaseGrammarObject:
 
     def copy(self) -> "BaseGrammarObject":
         return self
+
+    def inject_context(self, spec: "ConstraintSpec") -> None:
+        """Inject fresh context from a ConstraintSpec into this grammar object.
+
+        Called after cache lookup to allow cached syntax grammar reuse
+        with fresh type/import/semantic context per request.
+        Override in subclasses that support rich constraint context.
+        """
+        pass
 
     @property
     def finished(self):
@@ -153,6 +165,59 @@ class BaseGrammarBackend:
 
     def dispatch_structural_tag(self, key_string: str) -> Optional[BaseGrammarObject]:
         return self._not_supported("structural_tag", key_string)
+
+    def dispatch_with_spec(
+        self, spec: "ConstraintSpec"
+    ) -> Optional[BaseGrammarObject]:
+        """Dispatch grammar creation using rich constraint specification.
+
+        Default implementation delegates to legacy methods based on
+        which syntax constraint is present in the spec. Backends should
+        override this method to support full context.
+        """
+        if spec.json_schema is not None:
+            return self.dispatch_json(spec.json_schema)
+        elif spec.regex is not None:
+            return self.dispatch_regex(spec.regex)
+        elif spec.ebnf is not None:
+            return self.dispatch_ebnf(spec.ebnf)
+        elif spec.structural_tag is not None:
+            return self.dispatch_structural_tag(spec.structural_tag)
+        return None
+
+    def _init_value_dispatch_with_spec(
+        self, spec: "ConstraintSpec", require_reasoning: bool
+    ) -> Optional[BaseGrammarObject]:
+        s = time.perf_counter()
+        grammar = self.dispatch_with_spec(spec)
+        if grammar is not None and grammar.grammar_stats is not None:
+            grammar.grammar_stats.compilation_time = time.perf_counter() - s
+            grammar.grammar_stats.dispatch_type = spec.get_syntax_constraint_type()
+        return grammar
+
+    def get_cached_or_future_with_spec(
+        self, spec: "ConstraintSpec", require_reasoning: bool
+    ) -> Tuple[Union[BaseGrammarObject, Any], bool]:
+        """Get cached grammar or submit compilation for ConstraintSpec.
+
+        Uses the ConstraintSpec's computed cache key. After cache hit,
+        injects fresh context from the spec.
+        """
+        cache_key_str = spec.compute_cache_key()
+        constraint_type = spec.get_syntax_constraint_type() or "unknown"
+        cache_key = (constraint_type, cache_key_str)
+
+        value = self.cache.get(cache_key)
+        if value is not None:
+            copied = value.copy()
+            copied.inject_context(spec)
+            copied.maybe_init_reasoning(require_reasoning)
+            return copied, True
+
+        future = self.executor.submit(
+            self._init_value_dispatch_with_spec, spec, require_reasoning
+        )
+        return future, False
 
     def _init_value_dispatch(
         self, key: Tuple[str, str], require_reasoning: bool
@@ -256,6 +321,22 @@ def create_grammar_backend(
             tokenizer=tokenizer,
             any_whitespace=not server_args.constrained_json_disable_any_whitespace,
             whitespace_pattern=server_args.constrained_json_whitespace_pattern,
+        )
+    elif name == "ananke":
+        from sglang.srt.constrained.ananke.backend.backend import AnankeBackend
+
+        eos_list = list(eos_token_ids) if eos_token_ids else None
+
+        grammar_backend = AnankeBackend(
+            tokenizer=tokenizer,
+            vocab_size=vocab_size,
+            model_eos_token_ids=eos_list,
+            any_whitespace=not server_args.constrained_json_disable_any_whitespace,
+            whitespace_pattern=server_args.constrained_json_whitespace_pattern,
+            language=getattr(server_args, "ananke_language", "python"),
+            max_rollback_tokens=getattr(
+                server_args, "ananke_max_rollback_tokens", 200
+            ),
         )
     elif name == "none":
         return None
