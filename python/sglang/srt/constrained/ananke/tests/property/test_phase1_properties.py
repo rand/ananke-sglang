@@ -59,7 +59,7 @@ try:
         NarrowingContext,
         EMPTY_NARROWING,
     )
-    from ...domains.semantics.smt import Z3Solver, SMTFormula, SMTResult
+    from ...domains.semantics.smt import Z3Solver, SMTFormula, SMTResult, is_z3_available
 except ImportError:
     from domains.types.constraint import (
         Type,
@@ -94,7 +94,7 @@ except ImportError:
         NarrowingContext,
         EMPTY_NARROWING,
     )
-    from domains.semantics.smt import Z3Solver, SMTFormula, SMTResult
+    from domains.semantics.smt import Z3Solver, SMTFormula, SMTResult, is_z3_available
 
 
 # =============================================================================
@@ -282,12 +282,9 @@ class TestProtocolProperties:
 # =============================================================================
 
 
+@pytest.mark.skipif(not is_z3_available(), reason="Z3 not available")
 class TestZ3FormulaProperties:
     """Property-based tests for Z3 formula parsing."""
-
-    @pytest.fixture
-    def solver(self) -> Z3Solver:
-        return Z3Solver()
 
     @given(st.integers(min_value=-1000, max_value=1000))
     @settings(max_examples=50)
@@ -317,11 +314,7 @@ class TestZ3FormulaProperties:
     @settings(max_examples=50)
     def test_comparison_soundness(self, a: int, b: int) -> None:
         """Comparison formulas evaluate correctly."""
-        try:
-            solver = Z3Solver()
-        except RuntimeError:
-            # Z3 not available, skip test
-            pytest.skip("Z3 not available")
+        solver = Z3Solver()
 
         # a > b should be satisfiable iff a > b is true
         formula = SMTFormula(expression=f"{a} > {b}")
