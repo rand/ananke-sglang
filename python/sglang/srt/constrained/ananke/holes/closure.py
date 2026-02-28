@@ -72,20 +72,62 @@ class Continuation:
     def apply(self, value: Any) -> Any:
         """Apply this continuation to a value.
 
-        For now, this is a placeholder that returns the value.
-        Full implementation would evaluate the continuation.
+        Each continuation kind transforms the value according to
+        its evaluation context:
+
+        - IDENTITY: Pass through unchanged
+        - APPLICATION: Apply value as function to stored args
+        - BINDING: Bind value to a variable name, call body with bindings
+        - CONDITIONAL: Select then/else branch based on truthiness
+        - SEQUENCE: Pass value to the next computation in sequence
 
         Args:
-            value: The result of filling the hole
+            value: The result of filling/evaluating the hole
 
         Returns:
-            Result of applying continuation
+            Result of applying this continuation (and any chained ones)
         """
-        # For identity, just return the value
         if self.kind == ContinuationKind.IDENTITY:
             result = value
+
+        elif self.kind == ContinuationKind.APPLICATION:
+            fn = self.context.get("fn", value)
+            args = self.context.get("args", ())
+            kwargs = self.context.get("kwargs", {})
+            if callable(fn) and fn is not value:
+                result = fn(value, *args, **kwargs)
+            elif callable(value):
+                result = value(*args, **kwargs)
+            else:
+                result = value
+
+        elif self.kind == ContinuationKind.BINDING:
+            var_name = self.context.get("var")
+            body = self.context.get("body")
+            bindings = dict(self.context.get("bindings", {}))
+            if var_name is not None:
+                bindings[var_name] = value
+            if callable(body):
+                result = body(bindings)
+            else:
+                result = value
+
+        elif self.kind == ContinuationKind.CONDITIONAL:
+            then_branch = self.context.get("then_branch")
+            else_branch = self.context.get("else_branch")
+            if value:
+                result = then_branch(value) if callable(then_branch) else then_branch
+            else:
+                result = else_branch(value) if callable(else_branch) else else_branch
+
+        elif self.kind == ContinuationKind.SEQUENCE:
+            next_computation = self.context.get("next_computation")
+            if callable(next_computation):
+                result = next_computation(value)
+            else:
+                result = value
+
         else:
-            # Placeholder for other continuation kinds
             result = value
 
         # Chain to next continuation if present

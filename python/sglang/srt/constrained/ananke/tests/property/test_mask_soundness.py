@@ -524,21 +524,27 @@ class TestContextAwareSoundness:
 
         level = domain._compute_blocking_level(context_conf, bounds_conf)
 
-        # Soundness property: low confidence on either side -> PERMISSIVE
-        if context_conf in (ContextConfidence.LOW, ContextConfidence.NONE):
+        # Soundness property: NONE context -> PERMISSIVE
+        if context_conf == ContextConfidence.NONE:
             assert level == BlockingLevel.PERMISSIVE, \
-                f"Low context confidence {context_conf} should be PERMISSIVE, got {level}"
+                f"NONE context confidence should be PERMISSIVE, got {level}"
 
+        # LOW/UNKNOWN bounds -> PERMISSIVE
         if bounds_conf in (BoundsConfidence.LOW, BoundsConfidence.UNKNOWN):
             assert level == BlockingLevel.PERMISSIVE, \
                 f"Low bounds confidence {bounds_conf} should be PERMISSIVE, got {level}"
 
-        # AGGRESSIVE only with HIGH confidence on both sides
+        # LOW context: at most CONSERVATIVE (HIGH bounds permits CONSERVATIVE)
+        if context_conf == ContextConfidence.LOW:
+            assert level != BlockingLevel.AGGRESSIVE, \
+                f"LOW context should not be AGGRESSIVE, got {level}"
+
+        # AGGRESSIVE requires at least MEDIUM on both sides
         if level == BlockingLevel.AGGRESSIVE:
-            assert context_conf == ContextConfidence.HIGH, \
-                f"AGGRESSIVE requires HIGH context confidence, got {context_conf}"
-            assert bounds_conf == BoundsConfidence.HIGH, \
-                f"AGGRESSIVE requires HIGH bounds confidence, got {bounds_conf}"
+            assert context_conf in (ContextConfidence.HIGH, ContextConfidence.MEDIUM), \
+                f"AGGRESSIVE requires HIGH/MEDIUM context, got {context_conf}"
+            assert bounds_conf in (BoundsConfidence.HIGH, BoundsConfidence.MEDIUM), \
+                f"AGGRESSIVE requires HIGH/MEDIUM bounds, got {bounds_conf}"
 
     @given(tok=token_id())
     @settings(max_examples=30, suppress_health_check=[HealthCheck.function_scoped_fixture])

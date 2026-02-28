@@ -90,12 +90,22 @@ except ImportError:
 # Pattern for extracting bounds from simple comparison formulas
 # Matches: var > num, var >= num, var < num, var <= num, var == num
 _BOUND_PATTERN = re.compile(
-    r"^\s*(\w+)\s*(>|>=|<|<=|==)\s*(-?\d+(?:\.\d+)?)\s*$"
+    r"^\s*(\w+(?:\.\w+)*)\s*(>|>=|<|<=|==)\s*(-?\d+(?:\.\d+)?)\s*$"
 )
 
 # Reverse pattern: num < var, num <= var, etc.
 _REVERSE_BOUND_PATTERN = re.compile(
-    r"^\s*(-?\d+(?:\.\d+)?)\s*(>|>=|<|<=|==)\s*(\w+)\s*$"
+    r"^\s*(-?\d+(?:\.\d+)?)\s*(>|>=|<|<=|==)\s*(\w+(?:\.\w+)*)\s*$"
+)
+
+# Compound pattern: var > num and var < num (extracts both bounds)
+_COMPOUND_BOUND_PATTERN = re.compile(
+    r"^\s*(\w+(?:\.\w+)*)\s*(>|>=)\s*(-?\d+(?:\.\d+)?)\s+and\s+\1\s*(<|<=)\s*(-?\d+(?:\.\d+)?)\s*$"
+)
+
+# Chained comparison: num <= var < num (Python-style)
+_CHAINED_BOUND_PATTERN = re.compile(
+    r"^\s*(-?\d+(?:\.\d+)?)\s*(<=?)\s*(\w+(?:\.\w+)*)\s*(<|<=)\s*(-?\d+(?:\.\d+)?)\s*$"
 )
 
 
@@ -259,8 +269,8 @@ class VariableBounds:
     def is_clearly_violated(self, value: float) -> bool:
         """Check if a value clearly violates bounds (for CONSERVATIVE mode).
 
-        This is stricter than `contains()` - only returns True for
-        obvious violations like negative values when lower > 0.
+        More permissive than `contains()` to avoid false positives, but
+        still catches values that are unambiguously out of range.
 
         Args:
             value: The value to check
@@ -268,14 +278,22 @@ class VariableBounds:
         Returns:
             True if value clearly violates bounds
         """
-        # Negative value with positive lower bound
-        if self.lower is not None and self.lower > 0 and value < 0:
+        # Negative value with non-negative lower bound
+        if self.lower is not None and self.lower >= 0 and value < 0:
             return True
-        # Value significantly out of range (more than 2x bounds)
-        if self.lower is not None and value < self.lower - abs(self.lower):
+        # Positive value with non-positive upper bound
+        if self.upper is not None and self.upper <= 0 and value > 0:
             return True
-        if self.upper is not None and value > self.upper + abs(self.upper):
-            return True
+        # Value below lower bound (with small margin for rounding)
+        if self.lower is not None and value < self.lower:
+            margin = max(1.0, abs(self.lower) * 0.1)
+            if value < self.lower - margin:
+                return True
+        # Value above upper bound (with small margin for rounding)
+        if self.upper is not None and value > self.upper:
+            margin = max(1.0, abs(self.upper) * 0.1)
+            if value > self.upper + margin:
+                return True
         return False
 
 
@@ -599,22 +617,59 @@ class SemanticDomain(ConstraintDomain[SemanticConstraint]):
         expression: str,
         confidence: BoundsConfidence = BoundsConfidence.MEDIUM,
     ) -> Optional[Tuple[str, VariableBounds]]:
-        """Extract bounds from a simple comparison formula.
+        """Extract bounds from comparison formulas.
 
         Handles patterns like:
-        - x > 5
-        - x >= 10
-        - y < 100
-        - z <= 50
-        - n == 42
+        - x > 5, x >= 10, y < 100 (simple)
+        - 0 <= x < 10 (chained comparison)
+        - x >= 0 and x < 100 (compound)
+        - result >= 0 (dotted names like self.balance)
 
         Args:
             expression: The formula expression
             confidence: Confidence level for extracted bounds
 
         Returns:
-            Tuple of (variable_name, bounds) or None if not a simple bound
+            Tuple of (variable_name, bounds) or None if not a bound pattern
         """
+        # Try compound pattern: var >= num and var < num
+        match = _COMPOUND_BOUND_PATTERN.match(expression)
+        if match:
+            var, lower_op, lower_str, upper_op, upper_str = match.groups()
+            lower_num = float(lower_str)
+            upper_num = float(upper_str)
+            is_float = '.' in lower_str or '.' in upper_str
+            bounds = VariableBounds(is_float=is_float, confidence=confidence)
+            # Lower bound
+            if lower_op == '>':
+                bounds.lower = lower_num + (0.0 if is_float else 1.0)
+            else:  # >=
+                bounds.lower = lower_num
+            # Upper bound
+            if upper_op == '<':
+                bounds.upper = upper_num - (0.0 if is_float else 1.0)
+            else:  # <=
+                bounds.upper = upper_num
+            return (var, bounds)
+
+        # Try chained comparison: num <= var < num
+        match = _CHAINED_BOUND_PATTERN.match(expression)
+        if match:
+            lower_str, lower_op, var, upper_op, upper_str = match.groups()
+            lower_num = float(lower_str)
+            upper_num = float(upper_str)
+            is_float = '.' in lower_str or '.' in upper_str
+            bounds = VariableBounds(is_float=is_float, confidence=confidence)
+            if lower_op == '<':
+                bounds.lower = lower_num + (0.0 if is_float else 1.0)
+            else:  # <=
+                bounds.lower = lower_num
+            if upper_op == '<':
+                bounds.upper = upper_num - (0.0 if is_float else 1.0)
+            else:  # <=
+                bounds.upper = upper_num
+            return (var, bounds)
+
         # Try direct pattern: var op num
         match = _BOUND_PATTERN.match(expression)
         if match:
@@ -869,13 +924,14 @@ class SemanticDomain(ConstraintDomain[SemanticConstraint]):
 
                                  Bounds Confidence
                                  HIGH      MEDIUM    LOW/UNKNOWN
-            Context     HIGH     AGGR      CONS      PERM
-            Confidence  MEDIUM   CONS      CONS      PERM
-                        LOW/NONE PERM      PERM      PERM
+            Context     HIGH     AGGR      AGGR      PERM
+            Confidence  MEDIUM   AGGR      CONS      PERM
+                        LOW/NONE CONS      PERM      PERM
 
-        Key principle: soundness over completeness. We never want to
-        block a valid token (false positive), so we become permissive
-        when either confidence is low.
+        Updated to be more assertive when bounds confidence is HIGH,
+        since HIGH bounds come from explicit assertions/preconditions
+        and are reliable. CONSERVATIVE mode now catches more violations
+        (uses 10% margin instead of 2x margin).
 
         Args:
             context_conf: Confidence in the syntactic context
@@ -884,23 +940,31 @@ class SemanticDomain(ConstraintDomain[SemanticConstraint]):
         Returns:
             BlockingLevel indicating how aggressively to block
         """
-        # LOW or NONE context confidence -> always PERMISSIVE (soundness)
-        if context_conf in (ContextConfidence.LOW, ContextConfidence.NONE):
-            return BlockingLevel.PERMISSIVE
-
-        # LOW or UNKNOWN bounds confidence -> always PERMISSIVE
+        # LOW or UNKNOWN bounds confidence -> mostly PERMISSIVE
         if bounds_conf in (BoundsConfidence.LOW, BoundsConfidence.UNKNOWN):
             return BlockingLevel.PERMISSIVE
 
-        # HIGH context + HIGH bounds -> AGGRESSIVE
-        if context_conf == ContextConfidence.HIGH and bounds_conf == BoundsConfidence.HIGH:
-            return BlockingLevel.AGGRESSIVE
+        # NONE context confidence -> PERMISSIVE (don't know what we're generating)
+        if context_conf == ContextConfidence.NONE:
+            return BlockingLevel.PERMISSIVE
 
-        # Everything else is CONSERVATIVE (safe middle ground)
-        # This includes:
-        # - HIGH context + MEDIUM bounds
-        # - MEDIUM context + HIGH bounds
-        # - MEDIUM context + MEDIUM bounds
+        # HIGH bounds from explicit assertions/preconditions
+        if bounds_conf == BoundsConfidence.HIGH:
+            # HIGH or MEDIUM context -> AGGRESSIVE (bounds are reliable)
+            if context_conf in (ContextConfidence.HIGH, ContextConfidence.MEDIUM):
+                return BlockingLevel.AGGRESSIVE
+            # LOW context -> CONSERVATIVE (bounds are good, but context uncertain)
+            return BlockingLevel.CONSERVATIVE
+
+        # MEDIUM bounds
+        if bounds_conf == BoundsConfidence.MEDIUM:
+            if context_conf == ContextConfidence.HIGH:
+                return BlockingLevel.AGGRESSIVE
+            if context_conf == ContextConfidence.MEDIUM:
+                return BlockingLevel.CONSERVATIVE
+            # LOW context + MEDIUM bounds -> PERMISSIVE
+            return BlockingLevel.PERMISSIVE
+
         return BlockingLevel.CONSERVATIVE
 
     def _get_current_blocking_level(self, var_name: str) -> BlockingLevel:

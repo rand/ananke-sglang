@@ -924,11 +924,80 @@ class TestVariableBoundsConfidence:
         assert bounds.is_clearly_violated(-1)
         assert not bounds.is_clearly_violated(50)
 
-        # Value far out of range
+        # Value out of range (beyond margin)
         bounds = VariableBounds(lower=10, upper=20)
-        assert bounds.is_clearly_violated(-5)  # < lower - |lower|
-        assert bounds.is_clearly_violated(50)  # > upper + |upper|
-        assert not bounds.is_clearly_violated(5)  # Close but not clearly wrong
+        assert bounds.is_clearly_violated(-5)  # Negative with positive lower
+        assert bounds.is_clearly_violated(50)  # > upper + margin
+        assert bounds.is_clearly_violated(5)  # Below lower - margin (5 < 10 - 1)
+        assert not bounds.is_clearly_violated(9)  # Within margin of lower
+
+
+class TestCompoundBoundsExtraction:
+    """Tests for compound and chained bound pattern extraction."""
+
+    def test_compound_pattern(self, python_domain: SemanticDomain) -> None:
+        """Test 'var >= num and var < num' extraction."""
+        result = python_domain._extract_bounds_from_formula(
+            "x >= 0 and x < 100",
+            BoundsConfidence.HIGH,
+        )
+        assert result is not None
+        var, bounds = result
+        assert var == "x"
+        assert bounds.lower == 0
+        assert bounds.upper == 99  # < 100 -> <= 99 for int
+
+    def test_chained_comparison(self, python_domain: SemanticDomain) -> None:
+        """Test '0 <= var < 10' extraction."""
+        result = python_domain._extract_bounds_from_formula(
+            "0 <= index < 10",
+            BoundsConfidence.HIGH,
+        )
+        assert result is not None
+        var, bounds = result
+        assert var == "index"
+        assert bounds.lower == 0
+        assert bounds.upper == 9
+
+    def test_dotted_variable_name(self, python_domain: SemanticDomain) -> None:
+        """Test 'self.balance >= 0' extraction."""
+        result = python_domain._extract_bounds_from_formula(
+            "self.balance >= 0",
+            BoundsConfidence.HIGH,
+        )
+        assert result is not None
+        var, bounds = result
+        assert var == "self.balance"
+        assert bounds.lower == 0
+
+    def test_compound_with_floats(self, python_domain: SemanticDomain) -> None:
+        """Test compound with float values."""
+        result = python_domain._extract_bounds_from_formula(
+            "x >= 0.0 and x < 1.0",
+            BoundsConfidence.MEDIUM,
+        )
+        assert result is not None
+        var, bounds = result
+        assert var == "x"
+        assert bounds.lower == 0.0
+        assert bounds.upper == 1.0  # float: < 1.0 stays 1.0
+        assert bounds.is_float
+
+    def test_simple_pattern_still_works(self, python_domain: SemanticDomain) -> None:
+        """Test simple patterns are unaffected."""
+        result = python_domain._extract_bounds_from_formula("result >= 0")
+        assert result is not None
+        var, bounds = result
+        assert var == "result"
+        assert bounds.lower == 0
+
+    def test_reverse_pattern_still_works(self, python_domain: SemanticDomain) -> None:
+        """Test reverse patterns are unaffected."""
+        result = python_domain._extract_bounds_from_formula("0 <= count")
+        assert result is not None
+        var, bounds = result
+        assert var == "count"
+        assert bounds.lower == 0
 
 
 class TestBlockingLevelComputation:
@@ -942,21 +1011,21 @@ class TestBlockingLevelComputation:
         )
         assert level == BlockingLevel.AGGRESSIVE
 
-    def test_high_medium_conservative(self, python_domain: SemanticDomain) -> None:
-        """Test HIGH context + MEDIUM bounds = CONSERVATIVE."""
+    def test_high_medium_aggressive(self, python_domain: SemanticDomain) -> None:
+        """Test HIGH context + MEDIUM bounds = AGGRESSIVE."""
         level = python_domain._compute_blocking_level(
             ContextConfidence.HIGH,
             BoundsConfidence.MEDIUM,
         )
-        assert level == BlockingLevel.CONSERVATIVE
+        assert level == BlockingLevel.AGGRESSIVE
 
-    def test_medium_high_conservative(self, python_domain: SemanticDomain) -> None:
-        """Test MEDIUM context + HIGH bounds = CONSERVATIVE."""
+    def test_medium_high_aggressive(self, python_domain: SemanticDomain) -> None:
+        """Test MEDIUM context + HIGH bounds = AGGRESSIVE."""
         level = python_domain._compute_blocking_level(
             ContextConfidence.MEDIUM,
             BoundsConfidence.HIGH,
         )
-        assert level == BlockingLevel.CONSERVATIVE
+        assert level == BlockingLevel.AGGRESSIVE
 
     def test_medium_medium_conservative(self, python_domain: SemanticDomain) -> None:
         """Test MEDIUM context + MEDIUM bounds = CONSERVATIVE."""
@@ -966,9 +1035,17 @@ class TestBlockingLevelComputation:
         )
         assert level == BlockingLevel.CONSERVATIVE
 
-    def test_low_anything_permissive(self, python_domain: SemanticDomain) -> None:
-        """Test LOW context = PERMISSIVE (soundness)."""
-        for bounds_conf in BoundsConfidence:
+    def test_low_context_levels(self, python_domain: SemanticDomain) -> None:
+        """Test LOW context: CONSERVATIVE with HIGH bounds, PERMISSIVE otherwise."""
+        # LOW context + HIGH bounds -> CONSERVATIVE (bounds are reliable)
+        level = python_domain._compute_blocking_level(
+            ContextConfidence.LOW,
+            BoundsConfidence.HIGH,
+        )
+        assert level == BlockingLevel.CONSERVATIVE
+
+        # LOW context + MEDIUM/LOW/UNKNOWN bounds -> PERMISSIVE
+        for bounds_conf in (BoundsConfidence.MEDIUM, BoundsConfidence.LOW, BoundsConfidence.UNKNOWN):
             level = python_domain._compute_blocking_level(
                 ContextConfidence.LOW,
                 bounds_conf,

@@ -73,8 +73,8 @@ DOMAIN_CONSTRAINT_CONFIG: Dict[str, Dict[str, Any]] = {
     },
     "semantics": {
         "complexity": "semantic",
-        "expected_pass_rate": 0.64,
-        "notes": "Moderate complexity",
+        "expected_pass_rate": 0.72,
+        "notes": "Improved: compound bounds, tighter CONSERVATIVE blocking, expanded AGGRESSIVE matrix",
     },
     "syntax": {
         "complexity": "structural",

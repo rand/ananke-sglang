@@ -469,6 +469,125 @@ class TestContinuation:
         composed = cont1.compose(cont2)
         assert composed.next == cont2
 
+    def test_application_with_fn(self) -> None:
+        """Test APPLICATION continuation applies fn to value."""
+        cont = Continuation(
+            kind=ContinuationKind.APPLICATION,
+            context={"fn": lambda v, x: v + x, "args": (10,)},
+        )
+        assert cont.apply(5) == 15
+
+    def test_application_callable_value(self) -> None:
+        """Test APPLICATION continuation with callable value and args."""
+        cont = Continuation(
+            kind=ContinuationKind.APPLICATION,
+            context={"args": (3, 4)},
+        )
+        assert cont.apply(lambda a, b: a * b) == 12
+
+    def test_application_non_callable(self) -> None:
+        """Test APPLICATION continuation with non-callable returns value."""
+        cont = Continuation(
+            kind=ContinuationKind.APPLICATION,
+            context={"args": (1, 2)},
+        )
+        assert cont.apply(42) == 42
+
+    def test_binding_with_body(self) -> None:
+        """Test BINDING continuation binds value and calls body."""
+        cont = Continuation(
+            kind=ContinuationKind.BINDING,
+            context={
+                "var": "x",
+                "body": lambda bindings: bindings["x"] * 2,
+            },
+        )
+        assert cont.apply(21) == 42
+
+    def test_binding_with_existing_bindings(self) -> None:
+        """Test BINDING continuation merges with existing bindings."""
+        cont = Continuation(
+            kind=ContinuationKind.BINDING,
+            context={
+                "var": "y",
+                "bindings": {"x": 10},
+                "body": lambda b: b["x"] + b["y"],
+            },
+        )
+        assert cont.apply(32) == 42
+
+    def test_binding_no_body(self) -> None:
+        """Test BINDING continuation without body returns value."""
+        cont = Continuation(
+            kind=ContinuationKind.BINDING,
+            context={"var": "x"},
+        )
+        assert cont.apply("hello") == "hello"
+
+    def test_conditional_truthy(self) -> None:
+        """Test CONDITIONAL continuation selects then branch."""
+        cont = Continuation(
+            kind=ContinuationKind.CONDITIONAL,
+            context={
+                "then_branch": lambda v: f"yes: {v}",
+                "else_branch": lambda v: f"no: {v}",
+            },
+        )
+        assert cont.apply(True) == "yes: True"
+
+    def test_conditional_falsy(self) -> None:
+        """Test CONDITIONAL continuation selects else branch."""
+        cont = Continuation(
+            kind=ContinuationKind.CONDITIONAL,
+            context={
+                "then_branch": "yes",
+                "else_branch": "no",
+            },
+        )
+        assert cont.apply(False) == "no"
+        assert cont.apply(0) == "no"
+        assert cont.apply("") == "no"
+
+    def test_conditional_non_callable_branches(self) -> None:
+        """Test CONDITIONAL with plain values (not callables)."""
+        cont = Continuation(
+            kind=ContinuationKind.CONDITIONAL,
+            context={"then_branch": 100, "else_branch": -1},
+        )
+        assert cont.apply(True) == 100
+        assert cont.apply(False) == -1
+
+    def test_sequence_calls_next(self) -> None:
+        """Test SEQUENCE continuation calls next_computation."""
+        cont = Continuation(
+            kind=ContinuationKind.SEQUENCE,
+            context={"next_computation": lambda v: v.upper()},
+        )
+        assert cont.apply("hello") == "HELLO"
+
+    def test_sequence_no_computation(self) -> None:
+        """Test SEQUENCE without next_computation returns value."""
+        cont = Continuation(kind=ContinuationKind.SEQUENCE, context={})
+        assert cont.apply(42) == 42
+
+    def test_chained_continuations(self) -> None:
+        """Test composition of multiple continuation kinds."""
+        # BINDING -> APPLICATION chain
+        app_cont = Continuation(
+            kind=ContinuationKind.APPLICATION,
+            context={"fn": lambda v, x: v + x, "args": (100,)},
+        )
+        bind_cont = Continuation(
+            kind=ContinuationKind.BINDING,
+            context={
+                "var": "x",
+                "body": lambda b: b["x"] * 2,
+            },
+            next=app_cont,
+        )
+        # BINDING: 5 -> body({x:5}) -> 10; APPLICATION: fn(10, 100) -> 110
+        assert bind_cont.apply(5) == 110
+
 
 class TestHoleClosure:
     """Tests for HoleClosure."""
