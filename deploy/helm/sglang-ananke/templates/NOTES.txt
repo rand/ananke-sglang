@@ -1,0 +1,47 @@
+SGLang with Ananke Backend has been deployed!
+
+{{- if .Values.ingress.enabled }}
+Access the service via:
+{{- range $host := .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ (index $host.paths 0).path }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+Get the application URL by running:
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "sglang-ananke.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+{{- else if contains "LoadBalancer" .Values.service.type }}
+Get the application URL by running:
+  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+  kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "sglang-ananke.fullname" . }}
+{{- else if contains "ClusterIP" .Values.service.type }}
+Access the service by running:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "sglang-ananke.fullname" . }} 30000:{{ .Values.service.port }}
+
+Then visit: http://localhost:30000
+{{- end }}
+
+Configuration:
+  Model: {{ .Values.model.path }}
+  Ananke Backend: {{ if .Values.ananke.enabled }}enabled{{ else }}disabled{{ end }}
+{{- if .Values.ananke.enabled }}
+  Ananke Language: {{ .Values.ananke.language }}
+  Max Rollback Tokens: {{ .Values.ananke.maxRollbackTokens }}
+{{- end }}
+  Tensor Parallelism: {{ .Values.server.tpSize }} GPU(s)
+
+Health Endpoints:
+  Liveness:  /health
+  Readiness: /health_generate
+
+API Endpoints:
+  POST /v1/chat/completions  - Chat completions (OpenAI-compatible)
+  POST /v1/completions       - Text completions
+  GET  /v1/models            - List models
+  GET  /metrics              - Prometheus metrics
+
+Wait for the server to be ready:
+  kubectl --namespace {{ .Release.Namespace }} wait --for=condition=ready pod -l app.kubernetes.io/instance={{ .Release.Name }} --timeout=300s
+
+View logs:
+  kubectl --namespace {{ .Release.Namespace }} logs -f -l app.kubernetes.io/instance={{ .Release.Name }}

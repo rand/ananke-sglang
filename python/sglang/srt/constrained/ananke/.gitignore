@@ -1,0 +1,26 @@
+# Eval results (generated, not tracked)
+eval_results*.json
+*_eval_*.json
+layered_eval_results_*.json
+
+# Build artifacts
+zig/zig-out/
+zig/zig-cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test artifacts
+.pytest_cache/
+.hypothesis/
+htmlcov/
+.coverage
+
+# Session-specific files
+EVAL_HANDOFF.md

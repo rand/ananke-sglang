@@ -1,0 +1,63 @@
+#!/bin/bash
+# SGLang Ananke SageMaker Serve Script
+#
+# This script is called by SageMaker to start the inference server.
+# It reads configuration from environment variables and starts SGLang
+# with the Ananke backend.
+
+set -euo pipefail
+
+# Log startup
+echo "Starting SGLang Ananke server..."
+echo "Model path: ${SM_MODEL_DIR:-/opt/ml/model}"
+
+# Build server arguments
+ARGS=(
+    --host 0.0.0.0
+    --port 8080
+)
+
+# Model configuration
+if [[ -n "${MODEL_PATH:-}" ]]; then
+    ARGS+=(--model-path "${MODEL_PATH}")
+elif [[ -d "/opt/ml/model" ]]; then
+    ARGS+=(--model-path "/opt/ml/model")
+else
+    echo "Error: No model path specified"
+    exit 1
+fi
+
+# Tensor parallelism (SageMaker provides SM_NUM_GPUS)
+if [[ -n "${SM_NUM_GPUS:-}" ]]; then
+    ARGS+=(--tp-size "${SM_NUM_GPUS}")
+elif [[ -n "${TP_SIZE:-}" ]]; then
+    ARGS+=(--tp-size "${TP_SIZE}")
+fi
+
+# Memory fraction
+if [[ -n "${MEM_FRACTION:-}" ]]; then
+    ARGS+=(--mem-fraction-static "${MEM_FRACTION}")
+fi
+
+# Grammar backend (default: ananke)
+ARGS+=(--grammar-backend "${SGLANG_GRAMMAR_BACKEND:-ananke}")
+
+# Ananke configuration
+ARGS+=(--ananke-language "${ANANKE_LANGUAGE:-python}")
+ARGS+=(--ananke-max-rollback-tokens "${ANANKE_MAX_ROLLBACK_TOKENS:-200}")
+
+if [[ -n "${ANANKE_ENABLED_DOMAINS:-}" ]]; then
+    ARGS+=(--ananke-enabled-domains "${ANANKE_ENABLED_DOMAINS}")
+fi
+
+# Additional arguments from environment
+if [[ -n "${EXTRA_ARGS:-}" ]]; then
+    # shellcheck disable=SC2206
+    ARGS+=(${EXTRA_ARGS})
+fi
+
+# Log configuration
+echo "Server arguments: ${ARGS[*]}"
+
+# Start server
+exec python3 -m sglang.launch_server "${ARGS[@]}"

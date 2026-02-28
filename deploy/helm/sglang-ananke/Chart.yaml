@@ -1,0 +1,26 @@
+apiVersion: v2
+name: sglang-ananke
+description: SGLang inference server with Ananke constrained generation backend
+type: application
+version: 0.1.0
+appVersion: "0.5.6"
+
+home: https://github.com/sgl-project/sglang
+sources:
+  - https://github.com/sgl-project/sglang
+
+maintainers:
+  - name: SGLang Team
+    url: https://github.com/sgl-project
+
+keywords:
+  - sglang
+  - llm
+  - inference
+  - constrained-generation
+  - ananke
+  - gpu
+
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/category: machine-learning

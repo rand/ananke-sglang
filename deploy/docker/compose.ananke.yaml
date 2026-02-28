@@ -1,0 +1,80 @@
+# SGLang Ananke Docker Compose Configuration
+# For local development and testing
+#
+# Usage:
+#   cp ../.env.example ../.env
+#   # Edit .env with your HF_TOKEN and model
+#   docker compose -f compose.ananke.yaml up -d
+#
+# With monitoring:
+#   docker compose -f compose.ananke.yaml -f compose.monitoring.yaml up -d
+
+services:
+  sglang:
+    image: ${SGLANG_IMAGE:-lmsysorg/sglang:latest}
+    container_name: sglang-ananke
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+      # Mount local model directory if using local models
+      # - ./models:/models
+    restart: unless-stopped
+    network_mode: host  # Required for RDMA
+    privileged: true    # Required for RDMA
+    environment:
+      # Model configuration
+      - HF_TOKEN=${HF_TOKEN:-}
+      # Ananke configuration
+      - SGLANG_GRAMMAR_BACKEND=${SGLANG_GRAMMAR_BACKEND:-ananke}
+      - ANANKE_LANGUAGE=${ANANKE_LANGUAGE:-python}
+      - ANANKE_MAX_ROLLBACK_TOKENS=${ANANKE_MAX_ROLLBACK_TOKENS:-200}
+      - ANANKE_ENABLED_DOMAINS=${ANANKE_ENABLED_DOMAINS:-}
+      # Server configuration
+      - SGLANG_LOG_LEVEL=${SGLANG_LOG_LEVEL:-INFO}
+      - SGLANG_ENABLE_METRICS=${SGLANG_ENABLE_METRICS:-true}
+    entrypoint: python3 -m sglang.launch_server
+    command: >-
+      --model-path ${MODEL_PATH:-meta-llama/Llama-3.1-8B-Instruct}
+      --host ${SGLANG_HOST:-0.0.0.0}
+      --port ${SGLANG_PORT:-30000}
+      --tp-size ${SGLANG_TP_SIZE:-1}
+      --mem-fraction-static ${SGLANG_MEM_FRACTION:-0.9}
+      --grammar-backend ${SGLANG_GRAMMAR_BACKEND:-ananke}
+      --ananke-language ${ANANKE_LANGUAGE:-python}
+      --ananke-max-rollback-tokens ${ANANKE_MAX_ROLLBACK_TOKENS:-200}
+      ${ANANKE_ENABLED_DOMAINS:+--ananke-enabled-domains ${ANANKE_ENABLED_DOMAINS}}
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ipc: host
+    shm_size: ${SHM_SIZE:-10g}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:${SGLANG_PORT:-30000}/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${SGLANG_TP_SIZE:-1}
+              capabilities: [gpu]
+
+  # Optional: Redis for caching (uncomment if needed)
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: sglang-redis
+  #   ports:
+  #     - "6379:6379"
+  #   volumes:
+  #     - redis_data:/data
+  #   command: redis-server --appendonly yes
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
+
+# volumes:
+#   redis_data:

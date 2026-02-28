@@ -1,0 +1,40 @@
+# SGLang Ananke Minimal Image
+# Base Ananke support without optional dependencies
+# Uses llguidance as the core grammar engine
+#
+# Build:
+#   docker build -f Dockerfile.ananke-minimal -t sglang-ananke:minimal ..
+#
+# Build from repo root:
+#   docker build -f deploy/docker/Dockerfile.ananke-minimal -t sglang-ananke:minimal .
+
+ARG BASE_IMAGE=lmsysorg/sglang:latest
+
+FROM ${BASE_IMAGE} AS ananke-minimal
+
+# Set default Ananke environment variables
+ENV SGLANG_GRAMMAR_BACKEND=ananke \
+    ANANKE_LANGUAGE=python \
+    ANANKE_MAX_ROLLBACK_TOKENS=200
+
+# Verify Ananke installation (core dependencies should be in base image)
+RUN python3 -c "from sglang.srt.constrained.ananke import AnankeGrammar; print('Ananke backend available')"
+
+# Labels for image metadata
+LABEL org.opencontainers.image.title="SGLang with Ananke Backend (Minimal)" \
+      org.opencontainers.image.description="SGLang inference server with core Ananke constrained generation" \
+      org.opencontainers.image.source="https://github.com/sgl-project/sglang" \
+      org.opencontainers.image.vendor="SGLang Project"
+
+WORKDIR /sgl-workspace/sglang
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:${SGLANG_PORT:-30000}/health || exit 1
+
+# Default command
+CMD ["python3", "-m", "sglang.launch_server", \
+     "--model-path", "${MODEL_PATH:-meta-llama/Llama-3.1-8B-Instruct}", \
+     "--host", "0.0.0.0", \
+     "--port", "30000", \
+     "--grammar-backend", "ananke"]
