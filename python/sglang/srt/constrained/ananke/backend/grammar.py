@@ -764,6 +764,34 @@ class AnankeGrammar(BaseGrammarObject):
         if not constraints:
             return  # Nothing to evaluate
 
+        try:
+            self._evaluate_and_apply_domain_masks(vocab_mask, idx, constraints)
+        except Exception as e:
+            # Domain mask evaluation must never crash the server process.
+            # Log the error and fall through to syntax-only mode.
+            logger.error(
+                f"Domain mask evaluation failed (falling back to syntax-only): "
+                f"{type(e).__name__}: {e}",
+                exc_info=True,
+            )
+
+    def _evaluate_and_apply_domain_masks(
+        self,
+        vocab_mask: torch.Tensor,
+        idx: int,
+        constraints: Dict[str, Any],
+    ) -> None:
+        """Evaluate domain constraints and apply the fused mask.
+
+        Separated from _fill_vocab_mask_lazy so that errors in domain
+        evaluation are caught and the server falls back to syntax-only mode
+        instead of crashing.
+
+        Args:
+            vocab_mask: Bitmask tensor to fill [batch_size, mask_size]
+            idx: Index into the batch for this request
+            constraints: Dictionary of non-TOP domain constraints
+        """
         fused_mask = None
 
         if self._evaluation_strategy == EvaluationStrategy.LAZY:
@@ -833,6 +861,11 @@ class AnankeGrammar(BaseGrammarObject):
             fused_mask: Pre-computed fused mask from evaluation strategy
             constraints: Dictionary of domain constraints being applied
         """
+        # Ensure device consistency: move fused_mask to vocab_mask's device if needed
+        target_device = vocab_mask.device
+        if fused_mask.device != target_device:
+            fused_mask = fused_mask.to(target_device)
+
         # First, check if we can apply the full fused mask
         candidate_popcount = self._count_candidate_popcount(vocab_mask, idx, fused_mask)
 
@@ -872,6 +905,10 @@ class AnankeGrammar(BaseGrammarObject):
             domain = self.domains[domain_name]
             domain_constraint = constraints[domain_name]
             domain_mask = domain.token_mask(domain_constraint, self.context)
+
+            # Ensure device consistency
+            if domain_mask.device != target_device:
+                domain_mask = domain_mask.to(target_device)
 
             # Check candidate popcount
             candidate_popcount = self._count_candidate_popcount(
@@ -938,8 +975,13 @@ class AnankeGrammar(BaseGrammarObject):
         Returns:
             Popcount that would result from applying domain_mask
         """
+        # Ensure device consistency - use vocab_mask's device as canonical
+        target_device = vocab_mask.device
+        if domain_mask.device != target_device:
+            domain_mask = domain_mask.to(target_device)
+
         vocab_size = domain_mask.shape[0]
-        device = domain_mask.device
+        device = target_device
         mask_size = vocab_mask.shape[1]
 
         # Pad domain mask to multiple of 32
@@ -1249,6 +1291,10 @@ class AnankeGrammar(BaseGrammarObject):
             idx: Batch index for this request
             domain_mask: Boolean mask from domain [vocab_size]
         """
+        # Ensure device consistency
+        if domain_mask.device != vocab_mask.device:
+            domain_mask = domain_mask.to(vocab_mask.device)
+
         vocab_size = domain_mask.shape[0]
         device = domain_mask.device
         mask_size = vocab_mask.shape[1]

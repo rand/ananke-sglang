@@ -535,3 +535,67 @@ class TestEdgeCases:
 
         # Should not create mask pool
         assert grammar._mask_pool is None
+
+    def test_domain_mask_error_does_not_crash(self, mock_tokenizer):
+        """Test that domain mask errors are caught and don't crash the server.
+
+        Regression test for ananke-pwh: _apply_domain_mask_with_relaxation crash
+        when domain.token_mask() raises an exception.
+        """
+
+        class CrashingDomain(MockDomain):
+            """Domain that raises an error during token_mask."""
+
+            def token_mask(self, constraint, context):
+                raise RuntimeError("Simulated domain mask failure")
+
+        domains = {
+            "types": CrashingDomain("types", vocab_size=100),
+        }
+        grammar = AnankeGrammar(
+            syntax_grammar=None,
+            domains=domains,
+            constraint=UnifiedConstraint(
+                types=MockConstraint(value=5),  # Non-TOP to trigger evaluation
+            ),
+            vocab_size=100,
+            device="cpu",
+            tokenizer=mock_tokenizer,
+        )
+
+        vocab_mask = torch.full((1, 4), fill_value=-1, dtype=torch.int32, device="cpu")
+        # Must not raise - should catch and fall through to syntax-only
+        grammar.fill_vocab_mask(vocab_mask, idx=0)
+
+        # vocab_mask should be unchanged (no domain mask applied)
+        assert (vocab_mask == -1).all()
+
+    def test_domain_mask_with_non_top_constraint(self, mock_tokenizer):
+        """Test domain mask application with non-TOP constraints.
+
+        Exercises the _fill_vocab_mask_lazy → _evaluate_and_apply_domain_masks
+        → _apply_domain_mask_with_relaxation path.
+        """
+        domains = {
+            "types": MockDomain("types", vocab_size=100),
+        }
+        grammar = AnankeGrammar(
+            syntax_grammar=None,
+            domains=domains,
+            constraint=UnifiedConstraint(
+                types=MockConstraint(value=10),  # Non-TOP, blocks first 10 tokens
+            ),
+            vocab_size=100,
+            device="cpu",
+            tokenizer=mock_tokenizer,
+            allow_relaxation=True,
+            relaxation_threshold=1,  # Low threshold to avoid relaxation
+        )
+
+        vocab_mask = torch.full((1, 4), fill_value=-1, dtype=torch.int32, device="cpu")
+        # Should apply domain mask without crashing
+        grammar.fill_vocab_mask(vocab_mask, idx=0)
+
+        # Some bits should now be cleared by the domain mask
+        # (types MockDomain blocks first 10 tokens when value=10)
+        assert not (vocab_mask == -1).all()

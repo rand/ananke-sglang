@@ -459,6 +459,44 @@ class TestConstraintSpec:
         assert spec2.language == "typescript"
         assert spec2.json_schema == spec.json_schema
 
+    def test_from_dict_domains_alias(self) -> None:
+        """Test that 'domains' is accepted as alias for 'enabled_domains'."""
+        # Using "domains" shorthand
+        d = {"regex": r"\d+", "language": "python", "domains": ["types", "imports"]}
+        spec = ConstraintSpec.from_dict(d)
+        assert spec.enabled_domains == {"types", "imports"}
+
+    def test_from_dict_enabled_domains_preferred(self) -> None:
+        """Test that 'enabled_domains' takes priority over 'domains'."""
+        # When both are present, enabled_domains should take priority
+        d = {
+            "regex": r"\d+",
+            "language": "python",
+            "enabled_domains": ["types"],
+            "domains": ["imports"],
+        }
+        spec = ConstraintSpec.from_dict(d)
+        assert spec.enabled_domains == {"types"}
+
+    def test_from_dict_no_domains(self) -> None:
+        """Test that absent domains results in None (backend defaults)."""
+        d = {"regex": r"\d+", "language": "python"}
+        spec = ConstraintSpec.from_dict(d)
+        assert spec.enabled_domains is None
+
+    def test_from_dict_domains_single(self) -> None:
+        """Test 'domains' with a single domain."""
+        d = {"regex": r"\d+", "domains": ["syntax"]}
+        spec = ConstraintSpec.from_dict(d)
+        assert spec.enabled_domains == {"syntax"}
+
+    def test_from_dict_domains_all(self) -> None:
+        """Test 'domains' with all domains."""
+        all_domains = ["syntax", "types", "imports", "controlflow", "semantics"]
+        d = {"regex": r"\d+", "domains": all_domains}
+        spec = ConstraintSpec.from_dict(d)
+        assert spec.enabled_domains == set(all_domains)
+
 
 class TestConstraintSpecParser:
     """Tests for ConstraintSpecParser."""

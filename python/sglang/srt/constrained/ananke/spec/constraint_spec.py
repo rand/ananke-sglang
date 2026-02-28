@@ -1041,8 +1041,11 @@ class ConstraintSpec:
                 for c in d.get("semantic_constraints", [])
             ],
             # Domain configuration
+            # Accept "domains" as shorthand alias for "enabled_domains"
             enabled_domains=(
-                set(d["enabled_domains"]) if "enabled_domains" in d else None
+                set(d["enabled_domains"])
+                if "enabled_domains" in d
+                else (set(d["domains"]) if "domains" in d else None)
             ),
             disabled_domains=(
                 set(d["disabled_domains"]) if "disabled_domains" in d else None
