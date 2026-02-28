@@ -59,6 +59,7 @@ class MockSyntaxGrammar:
     
     def __init__(self, name: str = "mock"):
         self.name = name
+        self.finished = False
         self.fill_vocab_mask_calls = []
         self.accept_token_calls = []
         self.rollback_calls = []

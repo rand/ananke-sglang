@@ -71,7 +71,7 @@ async def handle_request(request: Request) -> Response:
             "data = await db.query(request.user_id)",
             "result = await asyncio.gather(task1, task2)",
             "await asyncio.sleep(1.0)",
-            "async with db.transaction(): pass",
+            "response = await fetch_data(request.url)",
         ],
         invalid_outputs=[
             "data = db.query(request.user_id)",  # Missing await

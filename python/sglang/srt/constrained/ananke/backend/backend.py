@@ -146,6 +146,11 @@ class AnankeBackend(BaseGrammarBackend):
         self.max_rollback_tokens = max_rollback_tokens
         self.default_intensity = default_intensity
 
+        # Auto-detect device: use CUDA if available, fall back to CPU
+        import torch as _torch
+
+        self._device = "cuda" if _torch.cuda.is_available() else "cpu"
+
         # Task complexity assessor for adaptive intensity
         self._complexity_assessor = TaskComplexityAssessor(
             config=intensity_config or IntensityConfig()
@@ -350,7 +355,7 @@ class AnankeBackend(BaseGrammarBackend):
             domains=effective_domains,
             constraint=unified_constraint,
             vocab_size=self.vocab_size,
-            device="cuda",
+            device=self._device,
             tokenizer=self.tokenizer,
             language=language,
             max_rollback_tokens=self.max_rollback_tokens,
@@ -514,7 +519,7 @@ class AnankeBackend(BaseGrammarBackend):
             domains=domains,
             constraint=unified_constraint,
             vocab_size=self.vocab_size,
-            device="cuda",
+            device=self._device,
             tokenizer=self.tokenizer,
             language=effective_language,
             max_rollback_tokens=self.max_rollback_tokens,

@@ -254,10 +254,10 @@ class TestVocabPartition:
         ]
         partition.classify_vocabulary(token_strings)
 
-        assert partition.is_in_category(0, TYPE_CATEGORY_KEYWORD) is True
-        assert partition.is_in_category(0, TYPE_CATEGORY_INTEGER) is False
-        assert partition.is_in_category(9, TYPE_CATEGORY_INTEGER) is True
-        assert partition.is_in_category(9, TYPE_CATEGORY_KEYWORD) is False
+        assert partition.is_in_category(0, TYPE_CATEGORY_KEYWORD) == True
+        assert partition.is_in_category(0, TYPE_CATEGORY_INTEGER) == False
+        assert partition.is_in_category(9, TYPE_CATEGORY_INTEGER) == True
+        assert partition.is_in_category(9, TYPE_CATEGORY_KEYWORD) == False
 
 
 # =============================================================================
