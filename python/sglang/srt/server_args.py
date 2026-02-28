@@ -149,7 +149,7 @@ DISAGG_TRANSFER_BACKEND_CHOICES = ["mooncake", "nixl", "ascend", "fake", "mori"]
 
 ENCODER_TRANSFER_BACKEND_CHOICES = ["zmq_to_scheduler", "zmq_to_tokenizer", "mooncake"]
 
-GRAMMAR_BACKEND_CHOICES = ["xgrammar", "outlines", "llguidance", "none"]
+GRAMMAR_BACKEND_CHOICES = ["xgrammar", "outlines", "llguidance", "ananke", "none"]
 
 DETERMINISTIC_ATTENTION_BACKEND_CHOICES = ["flashinfer", "fa3", "triton"]
 
@@ -453,6 +453,10 @@ class ServerArgs:
     prefill_attention_backend: Optional[str] = None
     sampling_backend: Optional[str] = None
     grammar_backend: Optional[str] = None
+    ananke_language: str = "python"
+    ananke_max_rollback_tokens: int = 200
+    ananke_enabled_domains: Optional[str] = None
+    ananke_intensity: Optional[str] = None
     mm_attention_backend: Optional[str] = None
     fp8_gemm_runner_backend: str = "auto"
     fp4_gemm_runner_backend: str = "flashinfer_cutlass"
@@ -3905,6 +3909,30 @@ class ServerArgs:
             choices=GRAMMAR_BACKEND_CHOICES,
             default=ServerArgs.grammar_backend,
             help="Choose the backend for grammar-guided decoding.",
+        )
+        parser.add_argument(
+            "--ananke-language",
+            type=str,
+            default=ServerArgs.ananke_language,
+            help="Default language for Ananke constrained decoding (default: python).",
+        )
+        parser.add_argument(
+            "--ananke-max-rollback-tokens",
+            type=int,
+            default=ServerArgs.ananke_max_rollback_tokens,
+            help="Max rollback tokens for Ananke constrained decoding (default: 200).",
+        )
+        parser.add_argument(
+            "--ananke-enabled-domains",
+            type=str,
+            default=ServerArgs.ananke_enabled_domains,
+            help="Comma-separated list of enabled Ananke constraint domains.",
+        )
+        parser.add_argument(
+            "--ananke-intensity",
+            type=str,
+            default=ServerArgs.ananke_intensity,
+            help="Ananke constraint intensity level.",
         )
         parser.add_argument(
             "--mm-attention-backend",

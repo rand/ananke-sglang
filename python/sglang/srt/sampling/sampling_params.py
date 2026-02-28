@@ -56,6 +56,7 @@ class SamplingParams:
         regex: Optional[str] = None,
         ebnf: Optional[str] = None,
         structural_tag: Optional[str] = None,
+        constraint_spec: Optional[Dict[str, Any]] = None,
         ignore_eos: bool = False,
         skip_special_tokens: bool = True,
         spaces_between_special_tokens: bool = True,
@@ -85,6 +86,7 @@ class SamplingParams:
         self.json_schema = json_schema
         self.ebnf = ebnf
         self.structural_tag = structural_tag
+        self.constraint_spec = constraint_spec
         self.ignore_eos = ignore_eos
         self.skip_special_tokens = skip_special_tokens
         self.spaces_between_special_tokens = spaces_between_special_tokens
@@ -156,9 +158,12 @@ class SamplingParams:
             self.json_schema,
             self.regex,
             self.ebnf,
+            self.constraint_spec,
         ]  # since mutually exclusive, only one can be set
         if sum(x is not None for x in grammars) > 1:
-            raise ValueError("Only one of regex, json_schema, or ebnf can be set.")
+            raise ValueError(
+                "Only one of regex, json_schema, ebnf, or constraint_spec can be set."
+            )
 
     def normalize(self, tokenizer):
         # Process stop strings

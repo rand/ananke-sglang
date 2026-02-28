@@ -282,6 +282,7 @@ class CompletionRequest(BaseModel):
     json_schema: Optional[str] = None
     regex: Optional[str] = None
     ebnf: Optional[str] = None
+    constraint_spec: Optional[Dict[str, Any]] = None
     repetition_penalty: float = 1.0
     stop_token_ids: Optional[List[int]] = None
     stop_regex: Optional[Union[str, List[str]]] = None
@@ -602,6 +603,7 @@ class ChatCompletionRequest(BaseModel):
     min_tokens: int = 0
     regex: Optional[str] = None
     ebnf: Optional[str] = None
+    constraint_spec: Optional[Dict[str, Any]] = None
     repetition_penalty: Optional[float] = None
     stop_token_ids: Optional[List[int]] = None
     stop_regex: Optional[Union[str, List[str]]] = None
@@ -769,6 +771,7 @@ class ChatCompletionRequest(BaseModel):
             "repetition_penalty": get_param("repetition_penalty"),
             "regex": self.regex,
             "ebnf": self.ebnf,
+            "constraint_spec": self.constraint_spec,
             "n": self.n,
             "no_stop_trim": self.no_stop_trim,
             "ignore_eos": self.ignore_eos,
